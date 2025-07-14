@@ -1,0 +1,805 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SHADOW LINE - 语音和文本聊天</title>
+    <!-- 引入 Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 引入 Google Fonts - Inter -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        /* 设置全局字体为 Inter */
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        /* 自定义滚动条样式 */
+        .scrollbar-thin::-webkit-scrollbar {
+            width: 8px;
+        }
+        .scrollbar-thin::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 10px;
+        }
+        .scrollbar-thin::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 10px;
+        }
+        .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+        /* 隐藏元素 */
+        .hidden {
+            display: none !important;
+        }
+    </style>
+</head>
+<body class="min-h-screen bg-gradient-to-br from-purple-500 to-indigo-600 flex items-center justify-center p-4 font-sans">
+    <div class="bg-white p-8 rounded-xl shadow-2xl w-full max-w-md text-center transform transition-all duration-300 hover:scale-105">
+        <h1 class="text-3xl font-extrabold text-gray-800 mb-6">SHADOW LINE</h1>
+
+        <div class="mb-6">
+            <label for="roomIdInput" class="block text-gray-700 text-sm font-bold mb-2">
+                房间ID:
+            </label>
+            <input
+                type="text"
+                id="roomIdInput"
+                placeholder="输入房间ID (例如: my-chat-room-123)"
+                class="shadow appearance-none border rounded-lg w-full py-3 px-4 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all duration-200"
+            />
+        </div>
+
+        <div class="flex flex-col space-y-4 mb-6">
+            <button
+                id="joinRoomBtn"
+                class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-lg shadow-lg transition-all duration-300 transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+                加入房间
+            </button>
+            <button
+                id="leaveRoomBtn"
+                class="bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-6 rounded-lg shadow-lg transition-all duration-300 transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed"
+                disabled
+            >
+                离开房间
+            </button>
+        </div>
+
+        <div id="audioControls" class="flex justify-center space-x-4 mb-6 hidden">
+            <button
+                id="toggleLocalMicBtn"
+                class="py-2 px-4 rounded-lg font-bold transition-all duration-300 bg-green-500 hover:bg-green-600 text-white disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+                麦克风开
+            </button>
+            <button
+                id="toggleRemoteAudioBtn"
+                class="py-2 px-4 rounded-lg font-bold transition-all duration-300 bg-purple-500 hover:bg-purple-600 text-white disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+                静音对方
+            </button>
+        </div>
+
+        <div class="bg-gray-100 p-4 rounded-lg mb-6 text-left">
+            <p class="text-sm text-gray-600 mb-2">
+                <strong>状态:</strong> <span id="statusMessage" class="font-semibold text-gray-800">请输入房间ID并加入</span>
+            </p>
+            <p class="text-sm text-gray-600">
+                <strong>您的用户ID:</strong> <span id="userIdDisplay" class="font-mono text-xs break-all text-gray-700">N/A</span>
+                <button
+                    id="copyUserIdBtn"
+                    class="ml-2 px-2 py-1 bg-gray-300 text-gray-800 text-xs rounded-md hover:bg-gray-400 transition-colors duration-200 hidden"
+                    title="复制用户ID"
+                >
+                    复制
+                </button>
+            </p>
+            <p id="currentRoomIdDisplay" class="text-sm text-gray-600 hidden">
+                <strong>当前房间ID:</strong> <span id="currentRoomIdValue" class="font-mono text-xs break-all text-gray-700"></span>
+            </p>
+            <p id="voiceConnectedStatus" class="text-sm text-green-600 font-bold mt-2 hidden">
+                语音聊天已连接！
+            </p>
+        </div>
+
+        <!-- Text Chat Section -->
+        <div id="textChatSection" class="bg-white p-4 rounded-lg shadow-inner border border-gray-200 mb-6 hidden">
+            <h2 class="text-xl font-bold text-gray-700 mb-4">文本聊天</h2>
+            <div
+                id="messagesContainer"
+                class="h-64 overflow-y-auto border border-gray-300 rounded-lg p-3 mb-4 bg-gray-50 scrollbar-thin scrollbar-thumb-gray-400 scrollbar-track-gray-200"
+            >
+                <p class="text-gray-500 text-center italic">还没有消息... (拖放图片到这里发送)</p>
+            </div>
+            <div class="flex">
+                <input
+                    type="text"
+                    id="newMessageInput"
+                    placeholder="输入您的消息..."
+                    class="flex-grow shadow appearance-none border rounded-l-lg w-full py-3 px-4 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all duration-200"
+                />
+                <button
+                    id="sendMessageBtn"
+                    class="bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-6 rounded-r-lg shadow-md transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                    发送
+                </button>
+            </div>
+        </div>
+
+        <!-- Audio elements for local and remote streams -->
+        <div class="hidden">
+            <audio id="localAudio" autoplay muted></audio>
+            <audio id="remoteAudio" autoplay></audio>
+        </div>
+
+        <p class="text-xs text-gray-500 mt-4">
+            请确保您的浏览器允许麦克风访问。
+        </p>
+    </div>
+
+    <!-- Custom Modal for Alerts -->
+    <div id="customModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50 hidden">
+        <div class="bg-white p-6 rounded-lg shadow-xl max-w-sm w-full text-center">
+            <h3 id="modalTitle" class="text-xl font-bold text-gray-800 mb-4"></h3>
+            <p id="modalMessage" class="text-gray-700 mb-6"></p>
+            <button
+                id="modalCloseBtn"
+                class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg shadow-md transition-all duration-300"
+            >
+                确定
+            </button>
+        </div>
+    </div>
+
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot, deleteDoc, collection, getDocs, addDoc, query } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global state variables
+        let db;
+        let auth;
+        let userId = '';
+        let isAuthReady = false;
+        let localStream = null;
+        let peerConnection = null;
+        let currentRoomId = '';
+        let isLocalMicMuted = false;
+        let isRemoteAudioMuted = false;
+        let isSendingImage = false;
+        let isConnectedToVoice = false; // New state for voice connection status
+
+        // Firebase configuration and app ID (provided by the environment)
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        // DOM Elements
+        const roomIdInput = document.getElementById('roomIdInput');
+        const joinRoomBtn = document.getElementById('joinRoomBtn');
+        const leaveRoomBtn = document.getElementById('leaveRoomBtn');
+        const statusMessageSpan = document.getElementById('statusMessage');
+        const userIdDisplay = document.getElementById('userIdDisplay');
+        const copyUserIdBtn = document.getElementById('copyUserIdBtn');
+        const currentRoomIdDisplay = document.getElementById('currentRoomIdDisplay');
+        const currentRoomIdValueSpan = document.getElementById('currentRoomIdValue');
+        const audioControlsDiv = document.getElementById('audioControls');
+        const toggleLocalMicBtn = document.getElementById('toggleLocalMicBtn');
+        const toggleRemoteAudioBtn = document.getElementById('toggleRemoteAudioBtn');
+        const localAudioRef = document.getElementById('localAudio');
+        const remoteAudioRef = document.getElementById('remoteAudio');
+        const textChatSection = document.getElementById('textChatSection');
+        const messagesContainer = document.getElementById('messagesContainer');
+        const newMessageInput = document.getElementById('newMessageInput');
+        const sendMessageBtn = document.getElementById('sendMessageBtn');
+        const voiceConnectedStatus = document.getElementById('voiceConnectedStatus');
+
+        // Modal Elements
+        const customModal = document.getElementById('customModal');
+        const modalTitle = document.getElementById('modalTitle');
+        const modalMessage = document.getElementById('modalMessage');
+        const modalCloseBtn = document.getElementById('modalCloseBtn');
+
+        // Function to show custom modal
+        function showCustomModal(title, message) {
+            modalTitle.textContent = title;
+            modalMessage.textContent = message;
+            customModal.classList.remove('hidden');
+        }
+
+        // Function to update UI elements
+        function updateUI() {
+            joinRoomBtn.disabled = !isAuthReady || !roomIdInput.value || currentRoomId === roomIdInput.value;
+            leaveRoomBtn.disabled = !currentRoomId;
+
+            if (currentRoomId) {
+                audioControlsDiv.classList.remove('hidden');
+                textChatSection.classList.remove('hidden');
+                currentRoomIdDisplay.classList.remove('hidden');
+                currentRoomIdValueSpan.textContent = currentRoomId;
+                newMessageInput.disabled = isSendingImage;
+                sendMessageBtn.disabled = newMessageInput.value.trim() === '' || isSendingImage;
+            } else {
+                audioControlsDiv.classList.add('hidden');
+                textChatSection.classList.add('hidden');
+                currentRoomIdDisplay.classList.add('hidden');
+            }
+
+            toggleLocalMicBtn.disabled = !localStream;
+            toggleLocalMicBtn.textContent = isLocalMicMuted ? '麦克风已静音' : '麦克风开';
+            toggleLocalMicBtn.classList.toggle('bg-gray-500', isLocalMicMuted);
+            toggleLocalMicBtn.classList.toggle('hover:bg-gray-600', isLocalMicMuted);
+            toggleLocalMicBtn.classList.toggle('bg-green-500', !isLocalMicMuted);
+            toggleLocalMicBtn.classList.toggle('hover:bg-green-600', !isLocalMicMuted);
+
+            toggleRemoteAudioBtn.disabled = !remoteAudioRef.srcObject;
+            toggleRemoteAudioBtn.textContent = isRemoteAudioMuted ? '对方已静音' : '静音对方';
+            toggleRemoteAudioBtn.classList.toggle('bg-gray-500', isRemoteAudioMuted);
+            toggleRemoteAudioBtn.classList.toggle('hover:bg-gray-600', isRemoteAudioMuted);
+            toggleRemoteAudioBtn.classList.toggle('bg-purple-500', !isRemoteAudioMuted);
+            toggleRemoteAudioBtn.classList.toggle('hover:bg-purple-600', !isRemoteAudioMuted);
+
+            userIdDisplay.textContent = userId || 'N/A';
+            if (userId) {
+                copyUserIdBtn.classList.remove('hidden');
+            } else {
+                copyUserIdBtn.classList.add('hidden');
+            }
+
+            if (isConnectedToVoice && currentRoomId) {
+                voiceConnectedStatus.classList.remove('hidden');
+            } else {
+                voiceConnectedStatus.classList.add('hidden');
+            }
+        }
+
+        // 1. Initialize Firebase and authenticate
+        async function initializeFirebase() {
+            try {
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+
+                onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        isAuthReady = true;
+                    } else {
+                        try {
+                            if (initialAuthToken) {
+                                await signInWithCustomToken(auth, initialAuthToken);
+                            } else {
+                                await signInAnonymously(auth);
+                            }
+                        } catch (error) {
+                            console.error("Firebase authentication failed:", error);
+                            statusMessageSpan.textContent = "认证失败，请检查控制台";
+                            showCustomModal("认证失败", "Firebase 认证失败，请检查您的网络连接或浏览器控制台。");
+                        }
+                    }
+                    updateUI(); // Update UI after auth state changes
+                });
+            } catch (error) {
+                console.error("Firebase initialization failed:", error);
+                statusMessageSpan.textContent = "Firebase初始化失败，请检查控制台";
+                showCustomModal("初始化失败", "Firebase 初始化失败，请检查您的配置或网络连接。");
+            }
+        }
+
+        // 2. Get local media stream (microphone)
+        async function startLocalStream() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                localStream = stream;
+                if (localAudioRef) {
+                    localAudioRef.srcObject = stream;
+                    localAudioRef.muted = true; // Always mute local playback to avoid echo
+                }
+                statusMessageSpan.textContent = '已获取麦克风权限';
+                updateUI();
+                return stream;
+            } catch (error) {
+                console.error('获取本地媒体流失败:', error);
+                let errorMessage = '未知错误';
+                if (error.name === 'NotAllowedError') {
+                    errorMessage = '麦克风权限被拒绝。请允许浏览器访问您的麦克风。';
+                } else if (error.name === 'NotFoundError') {
+                    errorMessage = '未找到麦克风设备。请确保您的麦克风已连接。';
+                } else {
+                    errorMessage = error.message;
+                }
+                statusMessageSpan.textContent = '获取麦克风权限失败: ' + errorMessage;
+                showCustomModal("麦克风访问失败", `无法获取麦克风权限: ${errorMessage}`);
+                return null;
+            }
+        }
+
+        // 3. Create RTCPeerConnection
+        function createPeerConnection(stream) {
+            const pc = new RTCPeerConnection({
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' }, // Google's public STUN server
+                ],
+            });
+
+            // Add local stream tracks to the peer connection
+            stream.getTracks().forEach(track => {
+                pc.addTrack(track, stream);
+            });
+
+            // Handle ICE candidates
+            pc.onicecandidate = async (event) => {
+                if (event.candidate && db && userId && currentRoomId) {
+                    await setDoc(doc(db, `artifacts/${appId}/public/data/voice_chat_rooms/${currentRoomId}/iceCandidates`, userId), {
+                        candidate: event.candidate.toJSON(),
+                        timestamp: Date.now(),
+                    }, { merge: true });
+                    console.log('发送ICE候选者:', event.candidate);
+                }
+            };
+
+            // Handle remote tracks
+            pc.ontrack = (event) => {
+                if (remoteAudioRef && event.streams && event.streams[0]) {
+                    remoteAudioRef.srcObject = event.streams[0];
+                    remoteAudioRef.muted = isRemoteAudioMuted;
+                    console.log('收到远程流');
+                    statusMessageSpan.textContent = '已连接到语音聊天';
+                    isConnectedToVoice = true;
+                    updateUI();
+                }
+            };
+
+            // Handle connection state changes for better status messages
+            pc.onconnectionstatechange = (event) => {
+                console.log('Peer connection state changed:', pc.connectionState);
+                switch (pc.connectionState) {
+                    case 'new':
+                    case 'checking':
+                        statusMessageSpan.textContent = '正在建立连接...';
+                        break;
+                    case 'connected':
+                        statusMessageSpan.textContent = '语音聊天已连接';
+                        isConnectedToVoice = true;
+                        break;
+                    case 'disconnected':
+                        statusMessageSpan.textContent = '语音聊天已断开';
+                        isConnectedToVoice = false;
+                        break;
+                    case 'failed':
+                        statusMessageSpan.textContent = '语音聊天连接失败';
+                        isConnectedToVoice = false;
+                        showCustomModal("连接失败", "语音聊天连接失败，请尝试重新加入房间。");
+                        break;
+                    case 'closed':
+                        statusMessageSpan.textContent = '语音聊天已关闭';
+                        isConnectedToVoice = false;
+                        break;
+                    default:
+                        statusMessageSpan.textContent = `连接状态: ${pc.connectionState}`;
+                }
+                updateUI();
+            };
+
+            peerConnection = pc;
+            return pc;
+        }
+
+        // 4. Join Room
+        async function joinRoom() {
+            const roomId = roomIdInput.value.trim();
+            if (!db || !userId || !roomId) {
+                statusMessageSpan.textContent = '请先输入房间ID并确保已认证';
+                showCustomModal("加入失败", "请先输入房间ID并确保已通过 Firebase 认证。");
+                return;
+            }
+            if (peerConnection && peerConnection.connectionState !== 'closed') {
+                statusMessageSpan.textContent = '您已在房间中，请先离开';
+                showCustomModal("已在房间中", "您已在一个房间中，请先离开当前房间再加入新房间。");
+                return;
+            }
+
+            statusMessageSpan.textContent = '正在加入房间...';
+            currentRoomId = roomId;
+            messagesContainer.innerHTML = '<p class="text-gray-500 text-center italic">还没有消息... (拖放图片到这里发送)</p>'; // Clear previous messages
+            isLocalMicMuted = false;
+            isRemoteAudioMuted = false;
+            isConnectedToVoice = false;
+            updateUI();
+
+            try {
+                const stream = await startLocalStream();
+                if (!stream) {
+                    statusMessageSpan.textContent = '无法加入房间：未获取到麦克风权限。';
+                    return;
+                }
+
+                const pc = createPeerConnection(stream);
+
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+
+                await setDoc(doc(db, `artifacts/${appId}/public/data/voice_chat_rooms/${roomId}/offers`, userId), {
+                    sdp: offer.sdp,
+                    type: offer.type,
+                    timestamp: Date.now(),
+                });
+                statusMessageSpan.textContent = '已发送，等待对方响应...';
+                console.log('已发送WebRTC报价');
+
+                listenForSignalingData(pc, roomId);
+                listenForTextMessages(roomId); // Start listening for text messages
+
+            } catch (error) {
+                console.error('加入房间失败:', error);
+                statusMessageSpan.textContent = '加入房间失败: ' + error.message;
+                showCustomModal("加入房间失败", `加入房间时发生错误: ${error.message}`);
+                leaveRoom(); // Clean up if join fails
+            }
+        }
+
+        // 5. Listen for signaling data (offers, answers, ICE candidates)
+        function listenForSignalingData(pc, roomId) {
+            if (!db || !userId || !roomId) return;
+
+            const offersRef = collection(db, `artifacts/${appId}/public/data/voice_chat_rooms/${roomId}/offers`);
+            onSnapshot(offersRef, async (snapshot) => {
+                snapshot.docChanges().forEach(async (change) => {
+                    if (change.type === 'added' && change.doc.id !== userId) {
+                        const data = change.doc.data();
+                        if (data.type === 'offer') {
+                            console.log('收到新报价:', data);
+                            statusMessageSpan.textContent = '收到新报价，正在创建应答...';
+                            await handleOffer(pc, data.sdp);
+                        }
+                    }
+                });
+            }, (error) => {
+                console.error("监听报价失败:", error);
+                statusMessageSpan.textContent = "监听报价失败: " + error.message;
+            });
+
+            const answersRef = collection(db, `artifacts/${appId}/public/data/voice_chat_rooms/${roomId}/answers`);
+            onSnapshot(answersRef, async (snapshot) => {
+                snapshot.docChanges().forEach(async (change) => {
+                    if (change.type === 'added' && change.doc.id !== userId) {
+                        const data = change.doc.data();
+                        if (data.type === 'answer') {
+                            console.log('收到应答:', data);
+                            statusMessageSpan.textContent = '收到应答，正在建立连接...';
+                            await handleAnswer(pc, data.sdp);
+                        }
+                    }
+                });
+            }, (error) => {
+                console.error("监听应答失败:", error);
+                statusMessageSpan.textContent = "监听应答失败: " + error.message;
+            });
+
+            const iceCandidatesRef = collection(db, `artifacts/${appId}/public/data/voice_chat_rooms/${roomId}/iceCandidates`);
+            onSnapshot(iceCandidatesRef, async (snapshot) => {
+                snapshot.docChanges().forEach(async (change) => {
+                    if (change.type === 'added' && change.doc.id !== userId) {
+                        const data = change.doc.data();
+                        if (data.candidate) {
+                            console.log('收到ICE候选者:', data.candidate);
+                            statusMessageSpan.textContent = '收到ICE候选者...';
+                            await handleIceCandidate(pc, data.candidate);
+                        }
+                    }
+                });
+            }, (error) => {
+                console.error("监听ICE候选者失败:", error);
+                statusMessageSpan.textContent = "监听ICE候选者失败: " + error.message;
+            });
+        }
+
+        // 6. Handle incoming offer
+        async function handleOffer(pc, sdp) {
+            try {
+                await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp }));
+                const answer = await pc.createAnswer();
+                await pc.setLocalDescription(answer);
+
+                await setDoc(doc(db, `artifacts/${appId}/public/data/voice_chat_rooms/${currentRoomId}/answers`, userId), {
+                    sdp: answer.sdp,
+                    type: answer.type,
+                    timestamp: Date.now(),
+                });
+                console.log('已发送WebRTC应答');
+                statusMessageSpan.textContent = '已发送应答';
+            } catch (error) {
+                console.error('处理报价失败:', error);
+                statusMessageSpan.textContent = '处理报价失败: ' + error.message;
+                showCustomModal("处理报价失败", `处理传入的 WebRTC 报价时发生错误: ${error.message}`);
+            }
+        }
+
+        // 7. Handle incoming answer
+        async function handleAnswer(pc, sdp) {
+            try {
+                await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp }));
+                console.log('已设置远程应答');
+                statusMessageSpan.textContent = '连接已建立';
+                isConnectedToVoice = true;
+                updateUI();
+            } catch (error) {
+                console.error('处理应答失败:', error);
+                statusMessageSpan.textContent = '处理应答失败: ' + error.message;
+                showCustomModal("处理应答失败", `处理传入的 WebRTC 应答时发生错误: ${error.message}`);
+            }
+        }
+
+        // 8. Handle incoming ICE candidate
+        async function handleIceCandidate(pc, candidate) {
+            try {
+                await pc.addIceCandidate(new RTCIceCandidate(candidate));
+                console.log('已添加ICE候选者');
+            } catch (error) {
+                console.error('添加ICE候选者失败:', error);
+                statusMessageSpan.textContent = '添加ICE候选者失败: ' + error.message;
+            }
+        }
+
+        // 9. Leave Room
+        async function leaveRoom() {
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+                localStream = null;
+                if (localAudioRef) {
+                    localAudioRef.srcObject = null;
+                }
+            }
+            if (peerConnection) {
+                peerConnection.close();
+                peerConnection = null;
+            }
+            if (remoteAudioRef) {
+                remoteAudioRef.srcObject = null;
+            }
+
+            if (db && userId && currentRoomId) {
+                try {
+                    await deleteDoc(doc(db, `artifacts/${appId}/public/data/voice_chat_rooms/${currentRoomId}/offers`, userId));
+                    await deleteDoc(doc(db, `artifacts/${appId}/public/data/voice_chat_rooms/${currentRoomId}/answers`, userId));
+                    await deleteDoc(doc(db, `artifacts/${appId}/public/data/voice_chat_rooms/${currentRoomId}/iceCandidates`, userId));
+                    console.log('已清除Firestore信令数据');
+
+                    const roomOffers = await getDocs(collection(db, `artifacts/${appId}/public/data/voice_chat_rooms/${currentRoomId}/offers`));
+                    const roomAnswers = await getDocs(collection(db, `artifacts/${appId}/public/data/voice_chat_rooms/${currentRoomId}/answers`));
+                    const roomCandidates = await getDocs(collection(db, `artifacts/${appId}/public/data/voice_chat_rooms/${currentRoomId}/iceCandidates`));
+
+                    if (roomOffers.empty && roomAnswers.empty && roomCandidates.empty) {
+                        const roomMessages = await getDocs(collection(db, `artifacts/${appId}/public/data/voice_chat_rooms/${currentRoomId}/messages`));
+                        if (roomMessages.empty) {
+                            await deleteDoc(doc(db, `artifacts/${appId}/public/data/voice_chat_rooms`, currentRoomId));
+                            console.log('房间已空，已删除房间文档');
+                        }
+                    }
+                } catch (error) {
+                    console.error('清除Firestore数据失败:', error);
+                    statusMessageSpan.textContent = '清除Firestore数据失败: ' + error.message;
+                }
+            }
+
+            currentRoomId = '';
+            statusMessageSpan.textContent = '已离开房间';
+            messagesContainer.innerHTML = '<p class="text-gray-500 text-center italic">还没有消息... (拖放图片到这里发送)</p>'; // Clear messages
+            isLocalMicMuted = false;
+            isRemoteAudioMuted = false;
+            isConnectedToVoice = false;
+            updateUI();
+            console.log('已离开房间');
+        }
+
+        // 10. Send text or image message
+        async function sendMessage(messageText = '', imageData = '') {
+            if (!db || !userId || !currentRoomId || (messageText.trim() === '' && imageData === '')) {
+                statusMessageSpan.textContent = '无法发送消息：请加入房间并输入内容或拖入图片';
+                return;
+            }
+
+            isSendingImage = true;
+            updateUI(); // Update UI to show loading state
+            try {
+                await addDoc(collection(db, `artifacts/${appId}/public/data/voice_chat_rooms/${currentRoomId}/messages`), {
+                    senderId: userId,
+                    text: messageText,
+                    imageData: imageData,
+                    timestamp: Date.now(),
+                });
+                newMessageInput.value = '';
+                statusMessageSpan.textContent = '消息已发送';
+            } catch (error) {
+                console.error('发送消息失败:', error);
+                statusMessageSpan.textContent = '发送消息失败: ' + error.message;
+                showCustomModal("发送消息失败", `发送消息时发生错误: ${error.message}`);
+            } finally {
+                isSendingImage = false;
+                updateUI(); // Update UI to clear loading state
+            }
+        }
+
+        // 11. Listen for text messages
+        let unsubscribeMessages = null; // To store the unsubscribe function
+        function listenForTextMessages(roomId) {
+            if (unsubscribeMessages) {
+                unsubscribeMessages(); // Unsubscribe from previous room's messages
+            }
+            if (!db || !roomId) return;
+
+            const messagesRef = collection(db, `artifacts/${appId}/public/data/voice_chat_rooms/${roomId}/messages`);
+            const q = query(messagesRef);
+
+            unsubscribeMessages = onSnapshot(q, (snapshot) => {
+                const newMessages = snapshot.docs.map(doc => ({
+                    id: doc.id,
+                    ...doc.data()
+                }));
+                newMessages.sort((a, b) => a.timestamp - b.timestamp);
+
+                messagesContainer.innerHTML = ''; // Clear existing messages
+                if (newMessages.length === 0) {
+                    messagesContainer.innerHTML = '<p class="text-gray-500 text-center italic">还没有消息... (拖放图片到这里发送)</p>';
+                } else {
+                    newMessages.forEach(msg => {
+                        const messageDiv = document.createElement('div');
+                        messageDiv.className = `mb-2 ${msg.senderId === userId ? 'text-right' : 'text-left'}`;
+                        const contentSpan = document.createElement('span');
+                        contentSpan.className = `inline-block p-2 rounded-lg max-w-[80%] ${msg.senderId === userId ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-800'}`;
+
+                        const senderStrong = document.createElement('strong');
+                        senderStrong.className = 'text-xs';
+                        senderStrong.textContent = msg.senderId === userId ? '您' : `用户 ${msg.senderId}`;
+                        contentSpan.appendChild(senderStrong);
+
+                        if (msg.imageData) {
+                            const img = document.createElement('img');
+                            img.src = msg.imageData;
+                            img.alt = '聊天图片';
+                            img.className = 'max-w-full h-auto rounded-md mt-1';
+                            img.onerror = (e) => { e.target.onerror = null; e.target.src = 'https://placehold.co/150x100/FF0000/FFFFFF?text=图片加载失败'; };
+                            contentSpan.appendChild(img);
+                        } else {
+                            const p = document.createElement('p');
+                            p.textContent = msg.text;
+                            contentSpan.appendChild(p);
+                        }
+
+                        const timestampSpan = document.createElement('span');
+                        timestampSpan.className = 'block text-xs text-opacity-75 mt-1';
+                        timestampSpan.textContent = new Date(msg.timestamp).toLocaleTimeString();
+                        contentSpan.appendChild(timestampSpan);
+
+                        messageDiv.appendChild(contentSpan);
+                        messagesContainer.appendChild(messageDiv);
+                    });
+                }
+
+                messagesContainer.scrollTop = messagesContainer.scrollHeight; // Scroll to bottom
+            }, (error) => {
+                console.error("监听消息失败:", error);
+                statusMessageSpan.textContent = "监听消息失败: " + error.message;
+                showCustomModal("加载消息失败", `无法加载聊天消息: ${error.message}`);
+            });
+        }
+
+        // Handle drag over event for image drop
+        function handleDragOver(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            e.dataTransfer.dropEffect = 'copy';
+        }
+
+        // Handle drop event for image
+        function handleDrop(e) {
+            e.preventDefault();
+            e.stopPropagation();
+
+            if (!currentRoomId) {
+                statusMessageSpan.textContent = '请先加入房间才能发送图片';
+                showCustomModal("发送图片失败", "请先加入一个房间才能发送图片。");
+                return;
+            }
+
+            isSendingImage = true;
+            updateUI(); // Show loading indicator
+
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                const file = files[0];
+                if (file.type.startsWith('image/')) {
+                    const reader = new FileReader();
+                    reader.onload = (event) => {
+                        sendMessage('', event.target.result); // Send image data
+                    };
+                    reader.onerror = (error) => {
+                        console.error('读取图片失败:', error);
+                        statusMessageSpan.textContent = '读取图片失败: ' + error.message;
+                        showCustomModal("读取图片失败", `无法读取图片文件: ${error.message}`);
+                        isSendingImage = false;
+                        updateUI();
+                    };
+                    reader.readAsDataURL(file);
+                } else {
+                    statusMessageSpan.textContent = '只能拖入图片文件';
+                    showCustomModal("无效文件类型", "您只能拖入图片文件。");
+                    isSendingImage = false;
+                    updateUI();
+                }
+            } else {
+                isSendingImage = false;
+                updateUI();
+            }
+        }
+
+        // Toggle local microphone mute
+        function toggleLocalMic() {
+            if (localStream) {
+                localStream.getAudioTracks().forEach(track => {
+                    track.enabled = !track.enabled;
+                });
+                isLocalMicMuted = !isLocalMicMuted;
+                statusMessageSpan.textContent = isLocalMicMuted ? '麦克风已开启' : '麦克风已静音';
+                updateUI();
+            } else {
+                statusMessageSpan.textContent = '请先加入房间以控制麦克风';
+                showCustomModal("操作失败", "请先加入房间以控制麦克风。");
+            }
+        }
+
+        // Toggle remote audio mute
+        function toggleRemoteAudio() {
+            if (remoteAudioRef && remoteAudioRef.srcObject) {
+                remoteAudioRef.muted = !remoteAudioRef.muted;
+                isRemoteAudioMuted = !isRemoteAudioMuted;
+                statusMessageSpan.textContent = isRemoteAudioMuted ? '对方已取消静音' : '对方已静音';
+                updateUI();
+            } else {
+                statusMessageSpan.textContent = '没有远程音频流可静音';
+                showCustomModal("操作失败", "没有远程音频流可静音。请确保已连接到语音聊天。");
+            }
+        }
+
+        // Function to copy User ID to clipboard
+        function copyUserIdToClipboard() {
+            if (userId) {
+                const tempInput = document.createElement('textarea');
+                tempInput.value = userId;
+                document.body.appendChild(tempInput);
+                tempInput.select();
+                document.execCommand('copy');
+                document.body.removeChild(tempInput);
+                statusMessageSpan.textContent = '用户ID已复制到剪贴板！';
+            }
+        }
+
+        // Event Listeners
+        window.onload = () => {
+            initializeFirebase();
+            updateUI(); // Initial UI update
+
+            joinRoomBtn.addEventListener('click', joinRoom);
+            leaveRoomBtn.addEventListener('click', leaveRoom);
+            toggleLocalMicBtn.addEventListener('click', toggleLocalMic);
+            toggleRemoteAudioBtn.addEventListener('click', toggleRemoteAudio);
+            sendMessageBtn.addEventListener('click', () => sendMessage(newMessageInput.value));
+            newMessageInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    sendMessage(newMessageInput.value);
+                }
+            });
+            roomIdInput.addEventListener('input', updateUI); // Update UI when room ID changes
+            copyUserIdBtn.addEventListener('click', copyUserIdToClipboard);
+            modalCloseBtn.addEventListener('click', () => customModal.classList.add('hidden'));
+
+            // Drag and drop listeners for messages container
+            messagesContainer.addEventListener('dragover', handleDragOver);
+            messagesContainer.addEventListener('drop', handleDrop);
+        };
+    </script>
+</body>
+</html>
