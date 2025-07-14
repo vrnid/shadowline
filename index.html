@@ -157,6 +157,20 @@
         </div>
     </div>
 
+    <!-- Image Preview Modal -->
+    <div id="imagePreviewModal" class="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center p-4 z-50 hidden">
+        <div class="relative w-full h-full flex items-center justify-center">
+            <img id="previewImage" src="" alt="Image Preview" class="max-w-full max-h-full object-contain rounded-lg shadow-xl" />
+            <button
+                id="closeImagePreviewBtn"
+                class="absolute top-4 right-4 text-white text-2xl font-bold bg-gray-800 bg-opacity-50 rounded-full w-8 h-8 flex items-center justify-center hover:bg-opacity-75 transition-colors duration-200"
+                aria-label="Close image preview"
+            >
+                &times;
+            </button>
+        </div>
+    </div>
+
     <!-- Firebase SDKs -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
@@ -227,6 +241,11 @@
         const modalTitle = document.getElementById('modalTitle');
         const modalMessage = document.getElementById('modalMessage');
         const modalCloseBtn = document.getElementById('modalCloseBtn');
+
+        // Image Preview Modal Elements
+        const imagePreviewModal = document.getElementById('imagePreviewModal');
+        const previewImage = document.getElementById('previewImage');
+        const closeImagePreviewBtn = document.getElementById('closeImagePreviewBtn');
 
         // Function to show custom modal
         function showCustomModal(title, message) {
@@ -883,15 +902,22 @@
 
                         const senderStrong = document.createElement('strong');
                         senderStrong.className = 'text-xs';
-                        senderStrong.textContent = msg.senderId === userId ? '您' : `用户 ${msg.senderId}`;
+                        senderStrong.textContent = msg.senderId === userId ? '您' : `用户 ${msg.senderId.substring(0, 8)}...`; // 截断用户ID显示
                         contentSpan.appendChild(senderStrong);
 
                         if (msg.imageData) {
                             const img = document.createElement('img');
                             img.src = msg.imageData;
                             img.alt = '聊天图片';
-                            img.className = 'max-w-full h-auto rounded-md mt-1';
+                            img.className = 'max-w-full h-auto rounded-md mt-1 cursor-pointer'; // Add cursor-pointer
                             img.onerror = (e) => { e.target.onerror = null; e.target.src = 'https://placehold.co/150x100/FF0000/FFFFFF?text=图片加载失败'; };
+                            
+                            // Add double-click listener for image preview
+                            img.addEventListener('dblclick', () => {
+                                previewImage.src = img.src;
+                                imagePreviewModal.classList.remove('hidden');
+                            });
+
                             contentSpan.appendChild(img);
                         } else {
                             const p = document.createElement('p');
@@ -1049,6 +1075,16 @@
             roomIdInput.addEventListener('input', updateUI); // Update UI when room ID changes
             copyUserIdBtn.addEventListener('click', copyUserIdToClipboard);
             modalCloseBtn.addEventListener('click', () => customModal.classList.add('hidden'));
+
+            // Image preview modal close listeners
+            closeImagePreviewBtn.addEventListener('click', () => imagePreviewModal.classList.add('hidden'));
+            imagePreviewModal.addEventListener('click', (e) => {
+                // Close if clicked outside the image
+                if (e.target === imagePreviewModal) {
+                    imagePreviewModal.classList.add('hidden');
+                }
+            });
+
 
             // Drag and drop listeners for messages container
             messagesContainer.addEventListener('dragover', handleDragOver);
