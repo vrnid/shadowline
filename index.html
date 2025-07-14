@@ -98,6 +98,9 @@
             <p id="currentRoomIdDisplay" class="text-sm text-gray-600 hidden">
                 <strong>当前房间ID:</strong> <span id="currentRoomIdValue" class="font-mono text-xs break-all text-gray-700"></span>
             </p>
+            <p id="roomUserCountDisplay" class="text-sm text-gray-600 hidden">
+                <strong>当前房间人数:</strong> <span id="roomUserCountValue" class="font-semibold text-gray-800">0</span>
+            </p>
             <p id="voiceConnectedStatus" class="text-sm text-green-600 font-bold mt-2 hidden">
                 语音聊天已连接！
             </p>
@@ -159,6 +162,27 @@
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, onSnapshot, deleteDoc, collection, getDocs, addDoc, query } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
+        // =====================================================================================
+        // ！！！重要提示：请务必将以下 Firebase 配置替换为您自己的项目凭据！！！
+        // 您可以在 Firebase 控制台的项目设置 (Project settings) 中找到这些值。
+        // 请务必替换所有 'YOUR_ACTUAL_...' 占位符为您的实际凭据。
+        // =====================================================================================
+        const appId = '1:274766423411:web:ef1549f49be22bf53b9106'; // 替换为您的 Firebase 项目 ID (例如: 'my-chat-app-12345')
+        const firebaseConfig = {
+                        apiKey: "AIzaSyAXlYCZr6F1Nunieg7CDeYM0O_6iX1AZq0",
+                authDomain: "wuzi-1ecf3.firebaseapp.com",
+                projectId: "wuzi-1ecf3",
+                storageBucket: "wuzi-1ecf3.firebasestorage.app",
+                messagingSenderId: "274766423411",
+                appId: "1:274766423411:web:ef1549f49be22bf53b9106",
+                measurementId: "G-EFPFDMRSMZ"
+        };
+        const initialAuthToken = null; // 如果您不使用自定义认证令牌，请保持为 null
+        // =====================================================================================
+        // Firebase 配置结束
+        // =====================================================================================
+
+
         // Global state variables
         let db;
         let auth;
@@ -171,20 +195,7 @@
         let isRemoteAudioMuted = false;
         let isSendingImage = false;
         let isConnectedToVoice = false; // New state for voice connection status
-
-        // Firebase configuration and app ID (provided by the environment)
-        const appId = '1:274766423411:web:ef1549f49be22bf53b9106'; // 替换为您的 Firebase 项目 ID (例如: 'my-chat-app-12345')
-        const firebaseConfig = {
-                        apiKey: "AIzaSyAXlYCZr6F1Nunieg7CDeYM0O_6iX1AZq0",
-                authDomain: "wuzi-1ecf3.firebaseapp.com",
-                projectId: "wuzi-1ecf3",
-                storageBucket: "wuzi-1ecf3.firebasestorage.app",
-                messagingSenderId: "274766423411",
-                appId: "1:274766423411:web:ef1549f49be22bf53b9106",
-                measurementId: "G-EFPFDMRSMZ"
-        };
-
-        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        let roomUserCount = 0; // New state for room user count
 
         // DOM Elements
         const roomIdInput = document.getElementById('roomIdInput');
@@ -195,6 +206,8 @@
         const copyUserIdBtn = document.getElementById('copyUserIdBtn');
         const currentRoomIdDisplay = document.getElementById('currentRoomIdDisplay');
         const currentRoomIdValueSpan = document.getElementById('currentRoomIdValue');
+        const roomUserCountDisplay = document.getElementById('roomUserCountDisplay'); // New DOM element for user count
+        const roomUserCountValueSpan = document.getElementById('roomUserCountValue'); // New DOM element for user count value
         const audioControlsDiv = document.getElementById('audioControls');
         const toggleLocalMicBtn = document.getElementById('toggleLocalMicBtn');
         const toggleRemoteAudioBtn = document.getElementById('toggleRemoteAudioBtn');
@@ -229,12 +242,15 @@
                 textChatSection.classList.remove('hidden');
                 currentRoomIdDisplay.classList.remove('hidden');
                 currentRoomIdValueSpan.textContent = currentRoomId;
+                roomUserCountDisplay.classList.remove('hidden'); // Show user count display
+                roomUserCountValueSpan.textContent = roomUserCount; // Update user count value
                 newMessageInput.disabled = isSendingImage;
                 sendMessageBtn.disabled = newMessageInput.value.trim() === '' || isSendingImage;
             } else {
                 audioControlsDiv.classList.add('hidden');
                 textChatSection.classList.add('hidden');
                 currentRoomIdDisplay.classList.add('hidden');
+                roomUserCountDisplay.classList.add('hidden'); // Hide user count display
             }
 
             toggleLocalMicBtn.disabled = !localStream;
@@ -417,6 +433,7 @@
             isLocalMicMuted = false;
             isRemoteAudioMuted = false;
             isConnectedToVoice = false;
+            roomUserCount = 0; // Reset user count on joining
             updateUI();
 
             try {
@@ -441,6 +458,7 @@
 
                 listenForSignalingData(pc, roomId);
                 listenForTextMessages(roomId); // Start listening for text messages
+                listenForRoomUsers(roomId); // Start listening for room users
 
             } catch (error) {
                 console.error('加入房间失败:', error);
@@ -600,6 +618,7 @@
             isLocalMicMuted = false;
             isRemoteAudioMuted = false;
             isConnectedToVoice = false;
+            roomUserCount = 0; // Reset user count on leaving
             updateUI();
             console.log('已离开房间');
         }
@@ -695,6 +714,25 @@
                 showCustomModal("加载消息失败", `无法加载聊天消息: ${error.message}`);
             });
         }
+
+        // New function: Listen for room users
+        let unsubscribeRoomUsers = null;
+        function listenForRoomUsers(roomId) {
+            if (unsubscribeRoomUsers) {
+                unsubscribeRoomUsers(); // Unsubscribe from previous room's user listener
+            }
+            if (!db || !roomId) return;
+
+            const offersRef = collection(db, `artifacts/${appId}/public/data/voice_chat_rooms/${roomId}/offers`);
+            unsubscribeRoomUsers = onSnapshot(offersRef, (snapshot) => {
+                roomUserCount = snapshot.size; // Get the number of documents (users)
+                updateUI();
+            }, (error) => {
+                console.error("监听房间人数失败:", error);
+                statusMessageSpan.textContent = "监听房间人数失败: " + error.message;
+            });
+        }
+
 
         // Handle drag over event for image drop
         function handleDragOver(e) {
