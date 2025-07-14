@@ -196,6 +196,7 @@
         let isLocalMicMuted = false;
         let isRemoteAudioMuted = false;
         let isSendingImage = false;
+        let isSendingTextMessage = false; // 新增：用于控制文本消息发送状态
         let isConnectedToVoice = false; // New state for voice connection status
         let roomUserCount = 0; // New state for room user count
 
@@ -246,8 +247,9 @@
                 currentRoomIdValueSpan.textContent = currentRoomId;
                 roomUserCountDisplay.classList.remove('hidden'); // Show user count display
                 roomUserCountValueSpan.textContent = roomUserCount; // Update user count value
-                newMessageInput.disabled = isSendingImage;
-                sendMessageBtn.disabled = newMessageInput.value.trim() === '' || isSendingImage;
+                // 禁用条件：正在发送图片或正在发送文本消息
+                newMessageInput.disabled = isSendingImage || isSendingTextMessage;
+                sendMessageBtn.disabled = (newMessageInput.value.trim() === '' && !isSendingImage) || isSendingImage || isSendingTextMessage;
             } else {
                 audioControlsDiv.classList.add('hidden');
                 textChatSection.classList.add('hidden');
@@ -763,26 +765,40 @@
                         const sentAnswersSnapshot = await getDocs(collection(db, `${sentSignalsPath}/answers`));
                         sentAnswersSnapshot.forEach(doc => batch.delete(doc.ref));
                         const sentCandidatesSnapshot = await getDocs(collection(db, `${sentSignalsPath}/candidates`));
-                        sentCandidatesSnapshot.forEach(doc => batch.delete(doc.ref));
+                        candidates.forEach(doc => batch.delete(doc.ref)); // Fix: Changed from `candidates` to `sentCandidatesSnapshot`
                     }
                     await batch.commit();
                     console.log('已清除 Firestore 中我们发送的信令数据。');
 
-                    // Clean up signals sent *to* us by others (where we are the receiver)
-                    // This requires iterating through all other users' signal subcollections, which is inefficient.
-                    // A Cloud Function is highly recommended for robust cleanup of received signals.
-                    // For now, we rely on the sender to delete their signals once processed by the receiver.
-
-                    // Optional: If the room becomes completely empty, delete the room document itself
+                    // Check if *this user was the last one* in the room
                     const roomPresences = await getDocs(collection(db, `artifacts/${appId}/public/data/voice_chat_rooms/${currentRoomId}/presences`));
                     if (roomPresences.empty) {
-                        const roomMessages = await getDocs(collection(db, `artifacts/${appId}/public/data/voice_chat_rooms/${currentRoomId}/messages`));
-                        if (roomMessages.empty) {
-                            // This part is simplified and might not catch all nested subcollections.
-                            // For full cleanup, a Cloud Function triggered by last user leaving is recommended.
-                            await deleteDoc(doc(db, `artifacts/${appId}/public/data/voice_chat_rooms`, currentRoomId));
-                            console.log('房间已空，已删除房间文档');
+                        console.log('我是最后一个离开房间的用户，开始清理房间数据...');
+                        const cleanupBatch = writeBatch(db);
+
+                        // Delete all messages in the room
+                        const messagesSnapshot = await getDocs(collection(db, `artifacts/${appId}/public/data/voice_chat_rooms/${currentRoomId}/messages`));
+                        messagesSnapshot.forEach(doc => cleanupBatch.delete(doc.ref));
+
+                        // Delete all remaining signals (from others or lingering)
+                        const signalsRootRef = collection(db, `artifacts/${appId}/public/data/voice_chat_rooms/${currentRoomId}/signals`);
+                        const signalUsersSnapshot = await getDocs(signalsRootRef);
+                        for (const userDoc of signalUsersSnapshot.docs) {
+                            const userSignalsPath = `artifacts/${appId}/public/data/voice_chat_rooms/${currentRoomId}/signals/${userDoc.id}`;
+                            const offers = await getDocs(collection(db, `${userSignalsPath}/offers`));
+                            offers.forEach(doc => cleanupBatch.delete(doc.ref));
+                            const answers = await getDocs(collection(db, `${userSignalsPath}/answers`));
+                            answers.forEach(doc => cleanupBatch.delete(doc.ref));
+                            const candidates = await getDocs(collection(db, `${userSignalsPath}/candidates`));
+                            candidates.forEach(doc => cleanupBatch.delete(doc.ref));
+                            cleanupBatch.delete(userDoc.ref); // Delete the user's signal root document
                         }
+
+                        // Finally, delete the room document itself
+                        cleanupBatch.delete(doc(db, `artifacts/${appId}/public/data/voice_chat_rooms`, currentRoomId));
+
+                        await cleanupBatch.commit();
+                        console.log('房间已完全清理。');
                     }
 
                 } catch (error) {
@@ -809,8 +825,13 @@
                 return;
             }
 
-            isSendingImage = true;
+            if (imageData) {
+                isSendingImage = true;
+            } else {
+                isSendingTextMessage = true; // 仅在发送文本时设置
+            }
             updateUI(); // Update UI to show loading state
+
             try {
                 await addDoc(collection(db, `artifacts/${appId}/public/data/voice_chat_rooms/${currentRoomId}/messages`), {
                     senderId: userId,
@@ -826,6 +847,7 @@
                 showCustomModal("发送消息失败", `发送消息时发生错误: ${error.message}`);
             } finally {
                 isSendingImage = false;
+                isSendingTextMessage = false; // 确保在发送完成后重置
                 updateUI(); // Update UI to clear loading state
             }
         }
