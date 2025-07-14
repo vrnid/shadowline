@@ -188,7 +188,7 @@
         // Global state variables
         let db;
         let auth;
-        let userId = '';
+        let userId = crypto.randomUUID(); // 每次加载页面时生成新的随机用户ID
         let isAuthReady = false;
         let localStream = null;
         let peerConnections = new Map(); // 存储与每个远程用户对应的 RTCPeerConnection 实例
@@ -249,7 +249,8 @@
                 roomUserCountValueSpan.textContent = roomUserCount; // Update user count value
                 // 禁用条件：正在发送图片或正在发送文本消息
                 newMessageInput.disabled = isSendingImage || isSendingTextMessage;
-                sendMessageBtn.disabled = (newMessageInput.value.trim() === '' && !isSendingImage) || isSendingImage || isSendingTextMessage;
+                // 只有当输入框有内容且没有发送中的操作时，发送按钮才启用
+                sendMessageBtn.disabled = newMessageInput.value.trim() === '' || isSendingImage || isSendingTextMessage;
             } else {
                 audioControlsDiv.classList.add('hidden');
                 textChatSection.classList.add('hidden');
@@ -295,22 +296,22 @@
                 db = getFirestore(app);
                 auth = getAuth(app);
 
-                onAuthStateChanged(auth, async (user) => {
+                // 每次页面加载时，强制匿名登录并获取新的UID
+                // 即使我们使用 crypto.randomUUID() 作为 Firestore 路径的 userId，
+                // Firebase Auth 仍需要一个有效的认证状态来允许 Firestore 写入操作。
+                await signInAnonymously(auth);
+
+                onAuthStateChanged(auth, (user) => {
                     if (user) {
-                        userId = user.uid;
+                        // 注意：这里的 user.uid 是 Firebase Auth 分配的，
+                        // 我们在 Firestore 路径中将使用我们自己生成的 userId。
+                        // 这确保了每次刷新页面都有一个新的“身份”用于聊天数据。
                         isAuthReady = true;
                     } else {
-                        try {
-                            if (initialAuthToken) {
-                                await signInWithCustomToken(auth, initialAuthToken);
-                            } else {
-                                await signInAnonymously(auth);
-                            }
-                        } catch (error) {
-                            console.error("Firebase authentication failed:", error);
-                            statusMessageSpan.textContent = "认证失败，请检查控制台";
-                            showCustomModal("认证失败", "Firebase 认证失败，请检查您的网络连接或浏览器控制台。");
-                        }
+                        // 如果匿名登录失败，显示错误
+                        console.error("Firebase authentication failed: User not signed in after anonymous attempt.");
+                        statusMessageSpan.textContent = "认证失败，请检查控制台";
+                        showCustomModal("认证失败", "Firebase 认证失败，请检查您的网络连接或浏览器控制台。");
                     }
                     updateUI(); // Update UI after auth state changes
                 });
@@ -765,7 +766,7 @@
                         const sentAnswersSnapshot = await getDocs(collection(db, `${sentSignalsPath}/answers`));
                         sentAnswersSnapshot.forEach(doc => batch.delete(doc.ref));
                         const sentCandidatesSnapshot = await getDocs(collection(db, `${sentSignalsPath}/candidates`));
-                        candidates.forEach(doc => batch.delete(doc.ref)); // Fix: Changed from `candidates` to `sentCandidatesSnapshot`
+                        sentCandidatesSnapshot.forEach(doc => batch.delete(doc.ref)); // Corrected variable name here
                     }
                     await batch.commit();
                     console.log('已清除 Firestore 中我们发送的信令数据。');
@@ -839,7 +840,7 @@
                     imageData: imageData,
                     timestamp: Date.now(),
                 });
-                newMessageInput.value = '';
+                newMessageInput.value = ''; // 清空输入框
                 statusMessageSpan.textContent = '消息已发送';
             } catch (error) {
                 console.error('发送消息失败:', error);
@@ -1038,6 +1039,8 @@
             toggleLocalMicBtn.addEventListener('click', toggleLocalMic);
             toggleRemoteAudioBtn.addEventListener('click', toggleRemoteAudio);
             sendMessageBtn.addEventListener('click', () => sendMessage(newMessageInput.value));
+            // 修复发送按钮禁用问题：当输入框内容变化时，更新UI
+            newMessageInput.addEventListener('input', updateUI);
             newMessageInput.addEventListener('keypress', (e) => {
                 if (e.key === 'Enter') {
                     sendMessage(newMessageInput.value);
