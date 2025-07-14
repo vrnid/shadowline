@@ -467,43 +467,42 @@
 
                 // Step 2: Announce our presence in the room
                 // This document will also be used to count active users in listenForRoomUsers
-                await setDoc(doc(db, `artifacts/${appId}/public/data/voice_chat_rooms/${currentRoomId}/offers`, userId), {
+                await setDoc(doc(db, `artifacts/${appId}/public/data/voice_chat_rooms/${currentRoomId}/presences`, userId), {
                     timestamp: Date.now(),
-                    // No SDP here initially, just a presence marker
                 });
                 console.log(`用户 ${userId} 已在房间 ${currentRoomId} 宣布存在。`);
 
-                // Step 3: Fetch existing peers and initiate connections
-                const offersRef = collection(db, `artifacts/${appId}/public/data/voice_chat_rooms/${currentRoomId}/offers`);
-                const existingOffersSnapshot = await getDocs(offersRef);
-
-                existingOffersSnapshot.forEach(async (docSnap) => {
-                    const remotePeerId = docSnap.id;
-                    if (remotePeerId !== userId) {
-                        console.log(`检测到现有用户 ${remotePeerId}，尝试建立连接...`);
-                        // Create a new PeerConnection for this specific remote peer
-                        const pc = createPeerConnection(remotePeerId, stream);
-
-                        // Create an offer for this new peer connection
-                        const offer = await pc.createOffer();
-                        await pc.setLocalDescription(offer);
-
-                        // Send this offer to Firestore, specifically for the remotePeerId
-                        // Path: /room/{roomId}/signals/{senderId}/offers/{receiverId}
-                        await setDoc(doc(db, `artifacts/${appId}/public/data/voice_chat_rooms/${currentRoomId}/signals/${userId}/offers`, remotePeerId), {
-                            sdp: offer.sdp,
-                            type: offer.type,
-                            timestamp: Date.now(),
-                        });
-                        console.log(`发送 WebRTC 报价给 ${remotePeerId}`);
-                    }
-                });
-
-                // Step 4: Start listening for all incoming signals (offers, answers, candidates)
+                // Step 3: Start listening for all incoming signals (offers, answers, candidates)
                 // This listener will handle signals from new peers joining, and responses from existing peers.
                 listenForSignalingData(currentRoomId, stream); // Pass stream for new PCs
                 listenForTextMessages(currentRoomId);
-                listenForRoomUsers(currentRoomId);
+                listenForRoomUsers(currentRoomId); // Listen for user count
+
+                // Step 4: Fetch existing peers and initiate connections based on ID comparison
+                const presencesRef = collection(db, `artifacts/${appId}/public/data/voice_chat_rooms/${currentRoomId}/presences`);
+                const existingPresencesSnapshot = await getDocs(presencesRef);
+
+                existingPresencesSnapshot.forEach(async (docSnap) => {
+                    const remotePeerId = docSnap.id;
+                    if (remotePeerId !== userId) {
+                        // Only the user with the lexicographically smaller ID initiates the offer
+                        if (userId < remotePeerId) {
+                            console.log(`检测到现有用户 ${remotePeerId} (ID较大)，我将发送报价...`);
+                            const pc = createPeerConnection(remotePeerId, stream);
+                            const offer = await pc.createOffer();
+                            await pc.setLocalDescription(offer);
+                            await setDoc(doc(db, `artifacts/${appId}/public/data/voice_chat_rooms/${currentRoomId}/signals/${userId}/offers`, remotePeerId), {
+                                sdp: offer.sdp,
+                                type: offer.type,
+                                timestamp: Date.now(),
+                            });
+                            console.log(`发送 WebRTC 报价给 ${remotePeerId}`);
+                        } else {
+                            console.log(`检测到现有用户 ${remotePeerId} (ID较小)，等待其发送报价...`);
+                        }
+                    }
+                });
+
 
                 statusMessageSpan.textContent = '已加入房间，正在尝试建立语音连接...';
                 updateUI();
@@ -528,32 +527,35 @@
 
             // Listener for incoming OFFERS directed to THIS user
             // Path: /room/{roomId}/signals/{remoteUserId}/offers/{localUserId}
-            const offersToMeRef = collection(db, `artifacts/${appId}/public/data/voice_chat_rooms/${roomId}/signals`);
-            const unsubOffers = onSnapshot(offersToMeRef, (snapshot) => {
+            const offersToMeCollectionRef = collection(db, `artifacts/${appId}/public/data/voice_chat_rooms/${roomId}/signals`);
+            const unsubOffersToMe = onSnapshot(offersToMeCollectionRef, (snapshot) => {
                 snapshot.docChanges().forEach(async (change) => {
-                    if (change.type === 'added') {
+                    if (change.type === 'added' || change.type === 'modified') { // Also listen to modified in case of re-sends
                         const remoteUserId = change.doc.id; // This is the sender of the offer
                         // Listen to the subcollection of offers from this remoteUserId specifically to us
                         const offersSubcollectionRef = collection(db, `artifacts/${appId}/public/data/voice_chat_rooms/${roomId}/signals/${remoteUserId}/offers`);
-                        const unsubOffersSub = onSnapshot(query(offersSubcollectionRef, doc(offersSubcollectionRef, userId)), async (offerSnapshot) => { // Query for doc with our userId
-                            offerSnapshot.docChanges().forEach(async (offerChange) => {
-                                if (offerChange.type === 'added' && offerChange.doc.id === userId) { // Offer specifically for us
-                                    const data = offerChange.doc.data();
-                                    if (data.type === 'offer') {
-                                        console.log(`收到来自 ${remoteUserId} 的报价:`, data);
-                                        statusMessageSpan.textContent = `收到来自 ${remoteUserId} 的报价，正在创建应答...`;
+                        const unsubOffersSub = onSnapshot(doc(offersSubcollectionRef, userId), async (offerDocSnap) => { // Listen to our specific offer doc
+                            if (offerDocSnap.exists()) {
+                                const data = offerDocSnap.data();
+                                if (data.type === 'offer') {
+                                    console.log(`收到来自 ${remoteUserId} 的报价:`, data);
+                                    statusMessageSpan.textContent = `收到来自 ${remoteUserId} 的报价，正在创建应答...`;
 
-                                        let pc = peerConnections.get(remoteUserId);
-                                        if (!pc) {
-                                            pc = createPeerConnection(remoteUserId, localStream); // Create new PC if it doesn't exist
-                                        }
+                                    let pc = peerConnections.get(remoteUserId);
+                                    if (!pc) {
+                                        pc = createPeerConnection(remoteUserId, localStream); // Create new PC if it doesn't exist
+                                    }
 
+                                    // Ensure PC is ready to set remote description (stable or have-local-pranswer)
+                                    if (pc.signalingState === 'stable' || pc.signalingState === 'have-local-pranswer') {
                                         await handleOffer(pc, data.sdp, remoteUserId);
                                         // Once processed, delete the offer to prevent re-processing
                                         await deleteDoc(doc(db, `artifacts/${appId}/public/data/voice_chat_rooms/${roomId}/signals/${remoteUserId}/offers`, userId));
+                                    } else {
+                                        console.warn(`PC for ${remoteUserId} is not in a suitable state (${pc.signalingState}) to set remote offer. Ignoring.`);
                                     }
                                 }
-                            });
+                            }
                         });
                         unsubscribeSignals.push(unsubOffersSub); // Store sub-listener
                     }
@@ -562,37 +564,39 @@
                 console.error("监听传入报价失败:", error);
                 statusMessageSpan.textContent = "监听传入报价失败: " + error.message;
             });
-            unsubscribeSignals.push(unsubOffers);
+            unsubscribeSignals.push(unsubOffersToMe);
 
 
             // Listener for incoming ANSWERS directed to THIS user
             // Path: /room/{roomId}/signals/{remoteUserId}/answers/{localUserId}
-            const answersToMeRef = collection(db, `artifacts/${appId}/public/data/voice_chat_rooms/${roomId}/signals`);
-            const unsubAnswers = onSnapshot(answersToMeRef, (snapshot) => {
+            const answersToMeCollectionRef = collection(db, `artifacts/${appId}/public/data/voice_chat_rooms/${roomId}/signals`);
+            const unsubAnswersToMe = onSnapshot(answersToMeCollectionRef, (snapshot) => {
                 snapshot.docChanges().forEach(async (change) => {
-                    if (change.type === 'added') {
+                    if (change.type === 'added' || change.type === 'modified') {
                         const remoteUserId = change.doc.id; // This is the sender of the answer
-                        // Listen to the subcollection of answers from this remoteUserId specifically to us
                         const answersSubcollectionRef = collection(db, `artifacts/${appId}/public/data/voice_chat_rooms/${roomId}/signals/${remoteUserId}/answers`);
-                        const unsubAnswersSub = onSnapshot(query(answersSubcollectionRef, doc(answersSubcollectionRef, userId)), async (answerSnapshot) => { // Query for doc with our userId
-                            answerSnapshot.docChanges().forEach(async (answerChange) => {
-                                if (answerChange.type === 'added' && answerChange.doc.id === userId) { // Answer specifically for us
-                                    const data = answerChange.doc.data();
-                                    if (data.type === 'answer') {
-                                        console.log(`收到来自 ${remoteUserId} 的应答:`, data);
-                                        statusMessageSpan.textContent = `收到来自 ${remoteUserId} 的应答，正在建立连接...`;
+                        const unsubAnswersSub = onSnapshot(doc(answersSubcollectionRef, userId), async (answerDocSnap) => { // Listen to our specific answer doc
+                            if (answerDocSnap.exists()) {
+                                const data = answerDocSnap.data();
+                                if (data.type === 'answer') {
+                                    console.log(`收到来自 ${remoteUserId} 的应答:`, data);
+                                    statusMessageSpan.textContent = `收到来自 ${remoteUserId} 的应答，正在建立连接...`;
 
-                                        const pc = peerConnections.get(remoteUserId);
-                                        if (pc) {
+                                    const pc = peerConnections.get(remoteUserId);
+                                    if (pc) {
+                                        // Ensure PC is ready to set remote description (have-local-offer or have-remote-pranswer)
+                                        if (pc.signalingState === 'have-local-offer' || pc.signalingState === 'have-remote-pranswer') {
                                             await handleAnswer(pc, data.sdp, remoteUserId);
                                             // Once processed, delete the answer
                                             await deleteDoc(doc(db, `artifacts/${appId}/public/data/voice_chat_rooms/${roomId}/signals/${remoteUserId}/answers`, userId));
                                         } else {
-                                            console.warn(`未找到与 ${remoteUserId} 对应的 PeerConnection 来处理应答。`);
+                                            console.warn(`PC for ${remoteUserId} is not in a suitable state (${pc.signalingState}) to set remote answer. Ignoring.`);
                                         }
+                                    } else {
+                                        console.warn(`未找到与 ${remoteUserId} 对应的 PeerConnection 来处理应答。`);
                                     }
                                 }
-                            });
+                            }
                         });
                         unsubscribeSignals.push(unsubAnswersSub); // Store sub-listener
                     }
@@ -601,37 +605,34 @@
                 console.error("监听传入应答失败:", error);
                 statusMessageSpan.textContent = "监听传入应答失败: " + error.message;
             });
-            unsubscribeSignals.push(unsubAnswers);
+            unsubscribeSignals.push(unsubAnswersToMe);
 
 
             // Listener for incoming ICE candidates directed to THIS user
             // Path: /room/{roomId}/signals/{remoteUserId}/candidates/{localUserId}
-            const candidatesToMeRef = collection(db, `artifacts/${appId}/public/data/voice_chat_rooms/${roomId}/signals`);
-            const unsubCandidates = onSnapshot(candidatesToMeRef, (snapshot) => {
+            const candidatesToMeCollectionRef = collection(db, `artifacts/${appId}/public/data/voice_chat_rooms/${roomId}/signals`);
+            const unsubCandidatesToMe = onSnapshot(candidatesToMeCollectionRef, (snapshot) => {
                 snapshot.docChanges().forEach(async (change) => {
-                    if (change.type === 'added') {
+                    if (change.type === 'added' || change.type === 'modified') {
                         const remoteUserId = change.doc.id; // This is the sender of the candidate
-                        // Listen to the subcollection of candidates from this remoteUserId specifically to us
                         const candidatesSubcollectionRef = collection(db, `artifacts/${appId}/public/data/voice_chat_rooms/${roomId}/signals/${remoteUserId}/candidates`);
-                        const unsubCandidatesSub = onSnapshot(query(candidatesSubcollectionRef, doc(candidatesSubcollectionRef, userId)), async (candidateSnapshot) => { // Query for doc with our userId
-                            candidateSnapshot.docChanges().forEach(async (candidateChange) => {
-                                if (candidateChange.type === 'added' && candidateChange.doc.id === userId) { // Candidate specifically for us
-                                    const data = candidateChange.doc.data();
-                                    if (data.candidate) {
-                                        console.log(`收到来自 ${remoteUserId} 的ICE候选者:`, data.candidate);
-                                        statusMessageSpan.textContent = `收到来自 ${remoteUserId} 的ICE候选者...`;
+                        const unsubCandidatesSub = onSnapshot(doc(candidatesSubcollectionRef, userId), async (candidateDocSnap) => { // Listen to our specific candidate doc
+                            if (candidateDocSnap.exists()) {
+                                const data = candidateDocSnap.data();
+                                if (data.candidate) {
+                                    console.log(`收到来自 ${remoteUserId} 的ICE候选者:`, data.candidate);
+                                    statusMessageSpan.textContent = `收到来自 ${remoteUserId} 的ICE候选者...`;
 
-                                        const pc = peerConnections.get(remoteUserId);
-                                        if (pc) {
-                                            await handleIceCandidate(pc, data.candidate, remoteUserId);
-                                            // Once processed, delete the candidate
-                                            await deleteDoc(doc(db, `artifacts/${appId}/public/data/voice_chat_rooms/${roomId}/signals/${remoteUserId}/candidates`, userId));
-                                        } else {
-                                            console.warn(`未找到与 ${remoteUserId} 对应的 PeerConnection 来处理ICE候选者。`);
-                                        }
+                                    const pc = peerConnections.get(remoteUserId);
+                                    if (pc) {
+                                        await handleIceCandidate(pc, data.candidate, remoteUserId);
+                                        // Once processed, delete the candidate
+                                        await deleteDoc(doc(db, `artifacts/${appId}/public/data/voice_chat_rooms/${roomId}/signals/${remoteUserId}/candidates`, userId));
+                                    } else {
+                                        console.warn(`未找到与 ${remoteUserId} 对应的 PeerConnection 来处理ICE候选者。`);
                                     }
                                 }
-                            });
+                            }
                         });
                         unsubscribeSignals.push(unsubCandidatesSub); // Store sub-listener
                     }
@@ -640,7 +641,7 @@
                 console.error("监听传入ICE候选者失败:", error);
                 statusMessageSpan.textContent = "监听传入ICE候选者失败: " + error.message;
             });
-            unsubscribeSignals.push(unsubCandidates);
+            unsubscribeSignals.push(unsubCandidatesToMe);
         }
 
         // 6. Handle incoming offer
@@ -648,8 +649,8 @@
             try {
                 // Ensure the PC is in a state where it can accept an offer
                 // 'stable' means it's ready to receive an offer
-                if (pc.signalingState !== 'stable') {
-                    console.warn(`PC for ${remoteUserId} is not stable (${pc.signalingState}), cannot set remote offer. Ignoring.`);
+                if (pc.signalingState !== 'stable' && pc.signalingState !== 'have-local-pranswer') {
+                    console.warn(`PC for ${remoteUserId} is not stable or have-local-pranswer (${pc.signalingState}), cannot set remote offer. Ignoring.`);
                     return;
                 }
                 await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp }));
@@ -676,8 +677,8 @@
             try {
                 // Ensure the PC is in a state where it can accept an answer (i.e., we sent an offer)
                 // 'have-local-offer' means we sent an offer and are waiting for an answer
-                if (pc.signalingState !== 'have-local-offer') {
-                    console.warn(`PC for ${remoteUserId} is not in have-local-offer state (${pc.signalingState}), cannot set remote answer. Ignoring.`);
+                if (pc.signalingState !== 'have-local-offer' && pc.signalingState !== 'have-remote-pranswer') {
+                    console.warn(`PC for ${remoteUserId} is not in have-local-offer or have-remote-pranswer state (${pc.signalingState}), cannot set remote answer. Ignoring.`);
                     return;
                 }
                 await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp }));
@@ -744,29 +745,39 @@
             // Clean up signaling data in Firestore for this user
             if (db && userId && currentRoomId) {
                 try {
-                    // Delete our own presence marker (offer document)
-                    await deleteDoc(doc(db, `artifacts/${appId}/public/data/voice_chat_rooms/${currentRoomId}/offers`, userId));
+                    // Delete our own presence marker
+                    await deleteDoc(doc(db, `artifacts/${appId}/public/data/voice_chat_rooms/${currentRoomId}/presences`, userId));
                     console.log('已清除Firestore信令数据 (存在标记)');
 
                     // Clean up our sent signals (offers, answers, candidates)
                     const batch = writeBatch(db); // Use batch writes for efficiency
                     const sentSignalsPath = `artifacts/${appId}/public/data/voice_chat_rooms/${currentRoomId}/signals/${userId}`;
-                    const sentOffersSnapshot = await getDocs(collection(db, `${sentSignalsPath}/offers`));
-                    sentOffersSnapshot.forEach(doc => batch.delete(doc.ref));
-                    const sentAnswersSnapshot = await getDocs(collection(db, `${sentSignalsPath}/answers`));
-                    sentAnswersSnapshot.forEach(doc => batch.delete(doc.ref));
-                    const sentCandidatesSnapshot = await getDocs(collection(db, `${sentSignalsPath}/candidates`));
-                    sentCandidatesSnapshot.forEach(doc => batch.delete(doc.ref));
+                    
+                    // Check if the sender's signals subcollection exists before trying to get documents
+                    const senderSignalsDocRef = doc(db, sentSignalsPath);
+                    const senderSignalsDocSnap = await getDoc(senderSignalsDocRef);
+
+                    if (senderSignalsDocSnap.exists) {
+                        const sentOffersSnapshot = await getDocs(collection(db, `${sentSignalsPath}/offers`));
+                        sentOffersSnapshot.forEach(doc => batch.delete(doc.ref));
+                        const sentAnswersSnapshot = await getDocs(collection(db, `${sentSignalsPath}/answers`));
+                        sentAnswersSnapshot.forEach(doc => batch.delete(doc.ref));
+                        const sentCandidatesSnapshot = await getDocs(collection(db, `${sentSignalsPath}/candidates`));
+                        sentCandidatesSnapshot.forEach(doc => batch.delete(doc.ref));
+                    }
                     await batch.commit();
                     console.log('已清除 Firestore 中我们发送的信令数据。');
 
+                    // Clean up signals sent *to* us by others (where we are the receiver)
+                    // This requires iterating through all other users' signal subcollections, which is inefficient.
+                    // A Cloud Function is highly recommended for robust cleanup of received signals.
+                    // For now, we rely on the sender to delete their signals once processed by the receiver.
+
                     // Optional: If the room becomes completely empty, delete the room document itself
-                    // This is more complex for subcollections, but the main 'offers' collection can indicate active users.
-                    const roomOffers = await getDocs(collection(db, `artifacts/${appId}/public/data/voice_chat_rooms/${currentRoomId}/offers`));
-                    if (roomOffers.empty) {
+                    const roomPresences = await getDocs(collection(db, `artifacts/${appId}/public/data/voice_chat_rooms/${currentRoomId}/presences`));
+                    if (roomPresences.empty) {
                         const roomMessages = await getDocs(collection(db, `artifacts/${appId}/public/data/voice_chat_rooms/${currentRoomId}/messages`));
                         if (roomMessages.empty) {
-                            // Only delete the top-level room document if all subcollections are empty (offers, messages, and signals)
                             // This part is simplified and might not catch all nested subcollections.
                             // For full cleanup, a Cloud Function triggered by last user leaving is recommended.
                             await deleteDoc(doc(db, `artifacts/${appId}/public/data/voice_chat_rooms`, currentRoomId));
@@ -883,7 +894,7 @@
             });
         }
 
-        // Listen for room users (presence based on 'offers' collection)
+        // Listen for room users (presence based on 'presences' collection)
         let unsubscribeRoomUsers = null;
         function listenForRoomUsers(roomId) {
             if (unsubscribeRoomUsers) {
@@ -891,10 +902,10 @@
             }
             if (!db || !roomId) return;
 
-            // We use the 'offers' collection as a simple presence indicator
-            const offersRef = collection(db, `artifacts/${appId}/public/data/voice_chat_rooms/${roomId}/offers`);
-            unsubscribeRoomUsers = onSnapshot(offersRef, (snapshot) => {
-                roomUserCount = snapshot.size; // Get the number of documents (users who published an offer/presence)
+            // We use the 'presences' collection to count active users
+            const presencesRef = collection(db, `artifacts/${appId}/public/data/voice_chat_rooms/${roomId}/presences`);
+            unsubscribeRoomUsers = onSnapshot(presencesRef, (snapshot) => {
+                roomUserCount = snapshot.size; // Get the number of documents (users who published a presence)
                 updateUI();
             }, (error) => {
                 console.error("监听房间人数失败:", error);
