@@ -374,6 +374,9 @@
                 iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
             });
 
+            // Add a flag to manage negotiation state
+            pc.negotiating = false; // Initialize negotiation flag
+
             // Add local stream tracks to the peer connection
             if (stream) {
                 stream.getTracks().forEach(track => {
@@ -487,45 +490,57 @@
             };
 
             // Handle negotiation needed
-            pc.onnegotiationneeded = async () => {
-                console.log(`Negotiation needed for ${remoteUserId}. Current signaling state: ${pc.signalingState}, Local Description: ${pc.localDescription ? pc.localDescription.type : 'none'}`);
-
-                // Only the initiator (peer with smaller ID) should create an offer.
-                if (userId >= remoteUserId) {
-                    console.log(`Skipping offer creation for ${remoteUserId} because this peer is not the initiator (userId >= remoteUserId).`);
+            pc.onnegotiationneeded = () => { // Changed to non-async to use setTimeout
+                // Set flag immediately to prevent re-entry
+                if (pc.negotiating) {
+                    console.log(`Skipping negotiation for ${remoteUserId}: already in progress.`);
                     return;
                 }
+                pc.negotiating = true; // Set flag to indicate negotiation is in progress
 
-                // If signaling state is not stable, defer negotiation.
-                // The event will likely fire again when stable.
-                if (pc.signalingState !== 'stable') {
-                    console.log(`Skipping offer creation for ${remoteUserId} because signaling state is not stable: ${pc.signalingState}`);
-                    return;
-                }
+                // Defer the actual negotiation logic to the next event loop tick
+                setTimeout(async () => {
+                    try {
+                        console.log(`Negotiation needed for ${remoteUserId}. Current signaling state: ${pc.signalingState}, Local Description: ${pc.localDescription ? pc.localDescription.type : 'none'}`);
 
-                // Additional check: Ensure no pending local or remote descriptions
-                // This is crucial to prevent m-line order issues.
-                if (pc.pendingLocalDescription || pc.pendingRemoteDescription) {
-                    console.log(`Skipping offer creation for ${remoteUserId} because there are pending local or remote descriptions.`);
-                    return;
-                }
+                        // Only the initiator (peer with smaller ID) should create an offer.
+                        if (userId >= remoteUserId) {
+                            console.log(`Skipping offer creation for ${remoteUserId} because this peer is not the initiator (userId >= remoteUserId).`);
+                            return; // Exit early if not initiator
+                        }
 
-                try {
-                    console.log(`Attempting to create offer for ${remoteUserId}.`);
-                    const offer = await pc.createOffer();
-                    console.log(`Created offer for ${remoteUserId}. Signaling state before setLocalDescription: ${pc.signalingState}`);
-                    await pc.setLocalDescription(offer);
-                    console.log(`Set local description for ${remoteUserId}. Signaling state after setLocalDescription: ${pc.signalingState}`);
+                        // If signaling state is not stable, defer negotiation.
+                        // The event will likely fire again when stable.
+                        if (pc.signalingState !== 'stable') {
+                            console.log(`Skipping offer creation for ${remoteUserId} because signaling state is not stable: ${pc.signalingState}`);
+                            return; // Exit early if not stable
+                        }
 
-                    await firestore.setDoc(firestore.doc(db, `artifacts/${appId}/public/data/voice_chat_rooms/${currentRoomId}/signals/${userId}/offers`, remoteUserId), {
-                        sdp: offer.sdp,
-                        type: offer.type,
-                        timestamp: Date.now(),
-                    });
-                    console.log(`Re-sent offer to ${remoteUserId} due to negotiation needed.`);
-                } catch (error) {
-                    console.error(`Error creating/sending offer on negotiationneeded for ${remoteUserId}:`, error);
-                }
+                        // Additional check: Ensure no pending local or remote descriptions
+                        if (pc.pendingLocalDescription || pc.pendingRemoteDescription) {
+                            console.log(`Skipping offer creation for ${remoteUserId} because there are pending local or remote descriptions.`);
+                            return; // Exit early if pending descriptions
+                        }
+
+                        console.log(`Attempting to create offer for ${remoteUserId}.`);
+                        console.log(`Tracks before createOffer for ${remoteUserId}:`, pc.getSenders().map(sender => sender.track ? `${sender.track.kind}:${sender.track.enabled}` : 'no-track')); // Added log
+                        const offer = await pc.createOffer();
+                        console.log(`Created offer for ${remoteUserId}. Signaling state before setLocalDescription: ${pc.signalingState}`);
+                        await pc.setLocalDescription(offer);
+                        console.log(`Set local description for ${remoteUserId}. Signaling state after setLocalDescription: ${pc.signalingState}`);
+
+                        await firestore.setDoc(firestore.doc(db, `artifacts/${appId}/public/data/voice_chat_rooms/${currentRoomId}/signals/${userId}/offers`, remoteUserId), {
+                            sdp: offer.sdp,
+                            type: offer.type,
+                            timestamp: Date.now(),
+                        });
+                        console.log(`Re-sent offer to ${remoteUserId} due to negotiation needed.`);
+                    } catch (error) {
+                        console.error(`Error creating/sending offer on negotiationneeded for ${remoteUserId}:`, error);
+                    } finally {
+                        pc.negotiating = false; // Reset flag regardless of success or failure
+                    }
+                }, 0); // A zero-delay setTimeout defers execution to the next event loop tick
             };
 
 
@@ -631,12 +646,7 @@
                         console.log(`Incoming answer from ${remoteUserId}:`, data);
                         const pc = peerConnections.get(remoteUserId);
                         if (pc) {
-                            if (pc.signalingState === 'have-local-offer' || pc.signalingState === 'have-remote-pranswer') {
-                                await handleAnswer(pc, data.sdp, remoteUserId);
-                                await firestore.deleteDoc(answerDocRef); // Delete after processing
-                            } else {
-                                console.warn(`PC for ${remoteUserId} not ready for answer: ${pc.signalingState}`);
-                            }
+                            await handleAnswer(pc, data.sdp, remoteUserId, answerDocRef); // Pass answerDocRef
                         }
                     }
                 }
@@ -728,9 +738,13 @@
                     console.warn(`PC for ${remoteUserId} is not stable or have-local-pranswer (${pc.signalingState}), cannot set remote offer. Ignoring.`);
                     return;
                 }
+                console.log(`handleOffer: PC for ${remoteUserId} signalingState before setRemoteDescription: ${pc.signalingState}`);
                 await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp }));
+                console.log(`handleOffer: PC for ${remoteUserId} signalingState after setRemoteDescription: ${pc.signalingState}`);
                 const answer = await pc.createAnswer();
+                console.log(`handleOffer: PC for ${remoteUserId} signalingState before setLocalDescription (answer): ${pc.signalingState}`);
                 await pc.setLocalDescription(answer);
+                console.log(`handleOffer: PC for ${remoteUserId} signalingState after setLocalDescription (answer): ${pc.signalingState}`);
 
                 // Send answer to Firestore, specific to remoteUserId
                 await firestore.setDoc(firestore.doc(db, `artifacts/${appId}/public/data/voice_chat_rooms/${currentRoomId}/signals/${userId}/answers`, remoteUserId), {
@@ -748,23 +762,48 @@
         }
 
         // 7. Handle incoming answer
-        async function handleAnswer(pc, sdp, remoteUserId) {
+        async function handleAnswer(pc, sdp, remoteUserId, answerDocRef) {
             try {
-                // Ensure the PC is in a state where it can accept an answer (i.e., we sent an offer)
-                // 'have-local-offer' means we sent an offer and are waiting for an answer
-                if (pc.signalingState !== 'have-local-offer' && pc.signalingState !== 'have-remote-pranswer') {
-                    console.warn(`PC for ${remoteUserId} is not in have-local-offer or have-remote-pranswer state (${pc.signalingState}), cannot set remote answer. Ignoring.`);
+                // If a remote description is already successfully set, we've processed this answer.
+                // Or if localDescription is not an offer, we are not in the state to receive an answer.
+                if (pc.currentRemoteDescription && pc.currentRemoteDescription.type === 'answer') {
+                    console.warn(`PC for ${remoteUserId} already has a current remote answer. Skipping incoming answer.`);
+                    await firestore.deleteDoc(answerDocRef); // Ensure it's deleted
                     return;
                 }
+
+                // Ensure the PC is in a state where it can accept an answer (i.e., we sent an offer)
+                if (pc.signalingState !== 'have-local-offer' && pc.signalingState !== 'have-remote-pranswer') {
+                    console.warn(`PC for ${remoteUserId} not in expected state for answer: ${pc.signalingState}. Ignoring.`);
+                    await firestore.deleteDoc(answerDocRef); // Ensure it's deleted if state is wrong
+                    return;
+                }
+
+                // If there's a pending remote description, it means an answer is already being processed or was just set.
+                if (pc.pendingRemoteDescription) {
+                    console.warn(`PC for ${remoteUserId} has a pending remote description. Deferring answer processing.`);
+                    return;
+                }
+
+                console.log(`handleAnswer: PC for ${remoteUserId} signalingState before setRemoteDescription: ${pc.signalingState}`);
                 await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp }));
+                console.log(`handleAnswer: PC for ${remoteUserId} signalingState after setRemoteDescription: ${pc.signalingState}`);
                 console.log(`已设置远程应答来自 ${remoteUserId}`);
                 statusMessageSpan.textContent = `与 ${remoteUserId} 连接已建立`;
                 isConnectedToVoice = true; // At least one voice connection is active
                 updateUI();
+                await firestore.deleteDoc(answerDocRef); // Delete after successful processing
             } catch (error) {
                 console.error(`处理来自 ${remoteUserId} 的应答失败:`, error);
                 statusMessageSpan.textContent = `处理应答失败: ${error.message}`;
                 showCustomModal("处理应答失败", `处理来自 ${remoteUserId} 的 WebRTC 应答时发生错误: ${error.message}`);
+                // If an error occurs, try to delete the doc to prevent re-processing the same problematic answer
+                try {
+                    await firestore.deleteDoc(answerDocRef);
+                    console.log(`Deleted problematic answer doc for ${remoteUserId}`);
+                } catch (deleteError) {
+                    console.error(`Error deleting problematic answer doc:`, deleteError);
+                }
             }
         }
 
