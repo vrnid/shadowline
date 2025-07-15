@@ -163,7 +163,7 @@
             <img id="previewImage" src="" alt="Image Preview" class="max-w-full max-h-full object-contain rounded-lg shadow-xl" />
             <button
                 id="closeImagePreviewBtn"
-                class="absolute top-4 right-4 text-white text-2xl font-bold bg-gray-800 bg-opacity-50 rounded-full w-8 h-8 flex items-center justify-center hover:bg-opacity-75 transition-colors duration-200"
+                class="absolute top-4 right-4 text-white text-2xl font-bold bg-gray-800 bg-opacity50 rounded-full w-8 h-8 flex items-center justify-center hover:bg-opacity-75 transition-colors duration-200"
                 aria-label="Close image preview"
             >
                 &times;
@@ -209,8 +209,8 @@
         let currentRoomId = '';
         let isLocalMicMuted = false;
         let isRemoteAudioMuted = false;
-        let isSendingImage = false;
-        let isSendingTextMessage = false; // 新增：用于控制文本消息发送状态
+        let isSendingImage = false; // Moved declaration here
+        let isSendingTextMessage = false; // Moved declaration here
         let isConnectedToVoice = false; // New state for voice connection status
         let roomUserCount = 0; // New state for room user count
 
@@ -453,6 +453,82 @@
                 updateUI();
             };
 
+            // Handle ICE connection state changes
+            pc.oniceconnectionstatechange = () => {
+                console.log(`ICE connection state for ${remoteUserId} changed: ${pc.iceConnectionState}`);
+                switch (pc.iceConnectionState) {
+                    case 'checking':
+                        statusMessageSpan.textContent = `ICE 协商中... (${remoteUserId})`;
+                        break;
+                    case 'connected':
+                        statusMessageSpan.textContent = `ICE 连接成功！(${remoteUserId})`;
+                        isConnectedToVoice = true;
+                        break;
+                    case 'completed':
+                        statusMessageSpan.textContent = `ICE 协商完成！(${remoteUserId})`;
+                        isConnectedToVoice = true;
+                        break;
+                    case 'disconnected':
+                        statusMessageSpan.textContent = `ICE 连接断开！(${remoteUserId})`;
+                        isConnectedToVoice = peerConnections.size > 0;
+                        break;
+                    case 'failed':
+                        statusMessageSpan.textContent = `ICE 连接失败！(${remoteUserId})`;
+                        isConnectedToVoice = peerConnections.size > 0;
+                        break;
+                    case 'closed':
+                        statusMessageSpan.textContent = `ICE 连接已关闭！(${remoteUserId})`;
+                        isConnectedToVoice = peerConnections.size > 0;
+                        break;
+                    default:
+                        statusMessageSpan.textContent = `ICE 状态: ${pc.iceConnectionState} (${remoteUserId})`;
+                }
+                updateUI();
+            };
+
+            // Handle negotiation needed
+            pc.onnegotiationneeded = async () => {
+                console.log(`Negotiation needed for ${remoteUserId}. Current signaling state: ${pc.signalingState}, Local Description: ${pc.localDescription ? pc.localDescription.type : 'none'}`);
+
+                // Only the initiator (peer with smaller ID) should create an offer.
+                if (userId >= remoteUserId) {
+                    console.log(`Skipping offer creation for ${remoteUserId} because this peer is not the initiator (userId >= remoteUserId).`);
+                    return;
+                }
+
+                // If signaling state is not stable, defer negotiation.
+                // The event will likely fire again when stable.
+                if (pc.signalingState !== 'stable') {
+                    console.log(`Skipping offer creation for ${remoteUserId} because signaling state is not stable: ${pc.signalingState}`);
+                    return;
+                }
+
+                // Additional check: Ensure no pending local or remote descriptions
+                // This is crucial to prevent m-line order issues.
+                if (pc.pendingLocalDescription || pc.pendingRemoteDescription) {
+                    console.log(`Skipping offer creation for ${remoteUserId} because there are pending local or remote descriptions.`);
+                    return;
+                }
+
+                try {
+                    console.log(`Attempting to create offer for ${remoteUserId}.`);
+                    const offer = await pc.createOffer();
+                    console.log(`Created offer for ${remoteUserId}. Signaling state before setLocalDescription: ${pc.signalingState}`);
+                    await pc.setLocalDescription(offer);
+                    console.log(`Set local description for ${remoteUserId}. Signaling state after setLocalDescription: ${pc.signalingState}`);
+
+                    await firestore.setDoc(firestore.doc(db, `artifacts/${appId}/public/data/voice_chat_rooms/${currentRoomId}/signals/${userId}/offers`, remoteUserId), {
+                        sdp: offer.sdp,
+                        type: offer.type,
+                        timestamp: Date.now(),
+                    });
+                    console.log(`Re-sent offer to ${remoteUserId} due to negotiation needed.`);
+                } catch (error) {
+                    console.error(`Error creating/sending offer on negotiationneeded for ${remoteUserId}:`, error);
+                }
+            };
+
+
             peerConnections.set(remoteUserId, pc); // Store the PC in the map
             return pc;
         }
@@ -628,6 +704,11 @@
                         }
                         const audioEl = document.getElementById(`remoteAudio-${remoteUserId}`);
                         if (audioEl) audioEl.remove();
+                        // Also clear peer-specific signal listeners for the removed peer
+                        if (peerSignalUnsubscribes.has(remoteUserId)) {
+                            peerSignalUnsubscribes.get(remoteUserId).forEach(unsub => unsub());
+                            peerSignalUnsubscribes.delete(remoteUserId);
+                        }
                         isConnectedToVoice = peerConnections.size > 0; // Update overall voice status
                         updateUI();
                     }
