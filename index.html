@@ -202,7 +202,7 @@
         // Global state variables
         let db;
         let auth;
-        let userId = crypto.randomUUID(); // 每次加载页面时生成新的随机用户ID
+        let userId = 'N/A'; // Will be set by Firebase Auth
         let isAuthReady = false;
         let localStream = null;
         let peerConnections = new Map(); // 存储与每个远程用户对应的 RTCPeerConnection 实例
@@ -213,6 +213,11 @@
         let isSendingTextMessage = false; // Moved declaration here
         let isConnectedToVoice = false; // New state for voice connection status
         let roomUserCount = 0; // New state for room user count
+
+        let heartbeatInterval = null; // To store the heartbeat interval ID
+        const PRESENCE_TIMEOUT_MS = 15000; // 15 seconds for presence timeout
+        let stalePresenceCleanupInterval = null; // To store the stale presence cleanup interval ID
+
 
         // DOM Elements
         const roomIdInput = document.getElementById('roomIdInput');
@@ -294,7 +299,7 @@
 
 
             userIdDisplay.textContent = userId || 'N/A';
-            if (userId) {
+            if (userId && userId !== 'N/A') {
                 copyUserIdBtn.classList.remove('hidden');
             } else {
                 copyUserIdBtn.classList.add('hidden');
@@ -315,25 +320,106 @@
                 db = firestore.getFirestore(app); // Use firestore.getFirestore
                 auth = getAuth(app);
 
-                // 每次页面加载时，强制匿名登录并获取新的UID
-                await signInAnonymously(auth);
-
-                onAuthStateChanged(auth, (user) => {
+                // Set up auth state listener FIRST
+                onAuthStateChanged(auth, async (user) => {
                     if (user) {
                         isAuthReady = true;
+                        userId = user.uid; // Use Firebase UID for persistence
+                        userIdDisplay.textContent = userId; // Update UI immediately
+                        startHeartbeat(); // Start heartbeat after successful authentication and userId is set
+                        console.log(`Firebase authenticated. User ID: ${userId}`);
                     } else {
-                        console.error("Firebase authentication failed: User not signed in after anonymous attempt.");
-                        statusMessageSpan.textContent = "认证失败，请检查控制台";
-                        showCustomModal("认证失败", "Firebase 认证失败，请检查您的网络连接或浏览器控制台。");
+                        // If no user is signed in, attempt anonymous sign-in
+                        console.log("No user signed in. Attempting anonymous sign-in...");
+                        try {
+                            await signInAnonymously(auth);
+                            // This will trigger onAuthStateChanged again with the new anonymous user
+                        } catch (anonError) {
+                            console.error("Anonymous sign-in failed:", anonError);
+                            statusMessageSpan.textContent = "认证失败，请检查控制台";
+                            showCustomModal("认证失败", "Firebase 匿名认证失败，请检查您的网络连接或浏览器控制台。");
+                        }
                     }
                     updateUI(); // Update UI after auth state changes
                 });
+
+                // Initial check: if already authenticated (e.g., from a previous session),
+                // the onAuthStateChanged listener will handle it.
+                // If not, the listener's 'else' block will trigger anonymous sign-in.
+
             } catch (error) {
                 console.error("Firebase initialization failed:", error);
                 statusMessageSpan.textContent = "Firebase初始化失败，请检查控制台";
                 showCustomModal("初始化失败", "Firebase 初始化失败，请检查您的配置或网络连接。");
             }
         }
+
+        // New function to start heartbeat
+        function startHeartbeat() {
+            if (heartbeatInterval) {
+                clearInterval(heartbeatInterval);
+            }
+            heartbeatInterval = setInterval(async () => {
+                if (db && userId && currentRoomId) {
+                    try {
+                        await firestore.setDoc(firestore.doc(db, `artifacts/${appId}/public/data/voice_chat_rooms/${currentRoomId}/presences`, userId), {
+                            timestamp: Date.now(),
+                        });
+                        // console.log(`Heartbeat sent for ${userId}`);
+                    } catch (error) {
+                        console.error("Failed to send heartbeat:", error);
+                    }
+                }
+            }, 5000); // Update every 5 seconds
+
+            // Start stale presence cleanup
+            startStalePresenceCleanup();
+        }
+
+        // New function to stop heartbeat
+        function stopHeartbeat() {
+            if (heartbeatInterval) {
+                clearInterval(heartbeatInterval);
+                heartbeatInterval = null;
+            }
+            stopStalePresenceCleanup();
+        }
+
+        function startStalePresenceCleanup() {
+            if (stalePresenceCleanupInterval) {
+                clearInterval(stalePresenceCleanupInterval);
+            }
+            stalePresenceCleanupInterval = setInterval(async () => {
+                if (db && currentRoomId) {
+                    try {
+                        const cutoff = Date.now() - PRESENCE_TIMEOUT_MS;
+                        const presencesRef = firestore.collection(db, `artifacts/${appId}/public/data/voice_chat_rooms/${currentRoomId}/presences`);
+                        const q = firestore.query(presencesRef, firestore.where('timestamp', '<', cutoff));
+                        const staleDocs = await firestore.getDocs(q);
+
+                        if (!staleDocs.empty) {
+                            const batch = firestore.writeBatch(db);
+                            staleDocs.forEach(doc => {
+                                console.log(`Deleting stale presence for user: ${doc.id}`);
+                                batch.delete(doc.ref);
+                            });
+                            await batch.commit();
+                            console.log(`Cleaned up ${staleDocs.size} stale presences.`);
+                        }
+                    } catch (error) {
+                        console.error("Failed to clean up stale presences:", error);
+                    }
+                }
+            }, 10000); // Check for stale presences every 10 seconds
+        }
+
+        function stopStalePresenceCleanup() {
+            if (stalePresenceCleanupInterval) {
+                clearInterval(stalePresenceCleanupInterval);
+                stalePresenceCleanupInterval = null;
+            }
+        }
+
 
         // 2. Get local media stream (microphone)
         async function startLocalStream() {
@@ -570,7 +656,7 @@
         // 4. Join Room
         async function joinRoom() {
             const roomId = roomIdInput.value.trim();
-            if (!db || !userId || !roomId) {
+            if (!db || userId === 'N/A' || !roomId) { // Check for userId being set by Firebase
                 statusMessageSpan.textContent = '请先输入房间ID并确保已认证';
                 showCustomModal("加入失败", "请先输入房间ID并确保已通过 Firebase 认证。");
                 return;
@@ -901,6 +987,9 @@
                 unsubscribeRoomUsers = null;
             }
 
+            // Stop heartbeat and cleanup intervals
+            stopHeartbeat();
+
             // Clean up signaling data in Firestore for this user
             if (db && userId && currentRoomId) {
                 try {
@@ -1182,7 +1271,7 @@
 
         // Function to copy User ID to clipboard
         function copyUserIdToClipboard() {
-            if (userId) {
+            if (userId && userId !== 'N/A') {
                 const tempInput = document.createElement('textarea');
                 tempInput.value = userId;
                 document.body.appendChild(tempInput);
