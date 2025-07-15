@@ -344,6 +344,11 @@
                     localAudioRef.srcObject = stream;
                     localAudioRef.muted = true; // Always mute local playback to avoid echo
                 }
+                // Ensure all audio tracks are enabled for sending
+                localStream.getAudioTracks().forEach(track => {
+                    track.enabled = true; // Explicitly enable the track
+                    console.log(`Local audio track enabled: ${track.enabled}`);
+                });
                 console.log('Local stream tracks:', localStream.getTracks()); // Added log
                 localStream.getTracks().forEach(track => { // Added log
                     console.log(`Local track: kind=${track.kind}, enabled=${track.enabled}, muted=${track.muted}`);
@@ -473,10 +478,24 @@
                         break;
                     case 'disconnected':
                         statusMessageSpan.textContent = `ICE 连接断开！(${remoteUserId})`;
+                        // Attempt to restart ICE if disconnected and signaling state is stable
+                        if (pc.signalingState === 'stable') {
+                            console.log(`ICE disconnected for ${remoteUserId}. Attempting ICE restart.`);
+                            pc.restartIce();
+                        } else {
+                            console.log(`ICE disconnected for ${remoteUserId} but signaling state is ${pc.signalingState}, not restarting ICE.`);
+                        }
                         isConnectedToVoice = peerConnections.size > 0;
                         break;
                     case 'failed':
                         statusMessageSpan.textContent = `ICE 连接失败！(${remoteUserId})`;
+                        // Attempt to restart ICE if failed and signaling state is stable
+                        if (pc.signalingState === 'stable') {
+                            console.log(`ICE failed for ${remoteUserId}. Attempting ICE restart.`);
+                            pc.restartIce();
+                        } else {
+                            console.log(`ICE failed for ${remoteUserId} but signaling state is ${pc.signalingState}, not restarting ICE.`);
+                        }
                         isConnectedToVoice = peerConnections.size > 0;
                         break;
                     case 'closed':
