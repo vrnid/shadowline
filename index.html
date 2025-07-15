@@ -379,7 +379,7 @@
         // New function to stop heartbeat
         function stopHeartbeat() {
             if (heartbeatInterval) {
-                clearInterval(heartbatInterval);
+                clearInterval(heartbeatInterval);
                 heartbeatInterval = null;
             }
             stopStalePresenceCleanup();
@@ -591,6 +591,16 @@
                     default:
                         statusMessageSpan.textContent = `ICE 状态: ${pc.iceConnectionState} (${remoteUserId})`;
                 }
+                updateUI();
+            };
+
+            // NEW: Handle ICE gathering state changes
+            pc.onicegatheringstatechange = () => {
+                console.log(`ICE gathering state for ${remoteUserId}: ${pc.iceGatheringState}`);
+                if (pc.iceGatheringState === 'complete') {
+                    console.log(`ICE gathering complete for ${remoteUserId}.`);
+                }
+                statusMessageSpan.textContent = `ICE 收集状态: ${pc.iceGatheringState}`;
                 updateUI();
             };
 
