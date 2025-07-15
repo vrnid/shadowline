@@ -752,16 +752,33 @@
         async function handleOffer(pc, sdp, remoteUserId) {
             try {
                 // Ensure the PC is in a state where it can accept an offer
-                // 'stable' means it's ready to receive an offer
+                // 'stable' means it's ready to receive an offer, 'have-local-pranswer' means we've sent a PRANSWER
                 if (pc.signalingState !== 'stable' && pc.signalingState !== 'have-local-pranswer') {
                     console.warn(`PC for ${remoteUserId} is not stable or have-local-pranswer (${pc.signalingState}), cannot set remote offer. Ignoring.`);
                     return;
                 }
                 console.log(`handleOffer: PC for ${remoteUserId} signalingState before setRemoteDescription: ${pc.signalingState}`);
                 await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp }));
-                console.log(`handleOffer: PC for ${remoteUserId} signalingState after setRemoteDescription: ${pc.signalingState}`);
+                console.log(`handleOffer: PC for ${remoteUserId} signalingState after setRemoteDescription (offer): ${pc.signalingState}`);
+
+                // After setting the remote offer, the signalingState should be 'have-remote-offer'.
+                // If it's 'stable' here, it.
+                if (pc.signalingState !== 'have-remote-offer') {
+                    console.warn(`PC for ${remoteUserId} not in 'have-remote-offer' state (${pc.signalingState}) after setting remote offer. Skipping answer creation.`);
+                    return;
+                }
+
                 const answer = await pc.createAnswer();
                 console.log(`handleOffer: PC for ${remoteUserId} signalingState before setLocalDescription (answer): ${pc.signalingState}`);
+
+                // Re-check signalingState right before setting the local answer.
+                // If it has changed to 'stable' (meaning remote answer arrived and was processed),
+                // then we should not try to set our local answer.
+                if (pc.signalingState !== 'have-remote-offer') {
+                    console.warn(`PC for ${remoteUserId} signalingState changed to ${pc.signalingState} right before setting local answer. Skipping setLocalDescription.`);
+                    return;
+                }
+
                 await pc.setLocalDescription(answer);
                 console.log(`handleOffer: PC for ${remoteUserId} signalingState after setLocalDescription (answer): ${pc.signalingState}`);
 
@@ -958,7 +975,7 @@
 
         // 10. Send text or image message
         async function sendMessage(messageText = '', imageData = '') {
-            if (!db || !userId || !currentRoomId || (messageText.trim() === '' && imageData === '')) {
+            if (!db || !userId || !currentRoomId || (messageText.trim() === '' && imageData === '') ) {
                 statusMessageSpan.textContent = '无法发送消息：请加入房间并输入内容或拖入图片';
                 return;
             }
