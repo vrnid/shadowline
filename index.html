@@ -99,7 +99,7 @@
                 <strong>当前房间ID:</strong> <span id="currentRoomIdValue" class="font-mono text-xs break-all text-gray-700"></span>
             </p>
             <p id="roomUserCountDisplay" class="text-sm text-gray-600 hidden">
-                <strong>当前房间人数:</strong> <span id="roomUserCountValue" class="font-semibold text-gray-800">0</span>
+                <strong>当前房间人数:</strong> <span class="font-semibold text-gray-800" id="roomUserCountValue">0</span>
             </p>
             <p id="voiceConnectedStatus" class="text-sm text-green-600 font-bold mt-2 hidden">
                 语音聊天已连接！
@@ -379,7 +379,7 @@
         // New function to stop heartbeat
         function stopHeartbeat() {
             if (heartbeatInterval) {
-                clearInterval(heartbeatInterval);
+                clearInterval(heartbatInterval);
                 heartbeatInterval = null;
             }
             stopStalePresenceCleanup();
@@ -847,9 +847,17 @@
                 await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp }));
                 console.log(`handleOffer: PC for ${remoteUserId} signalingState after setRemoteDescription (offer): ${pc.signalingState}`);
 
-                // After setting the remote offer, the signalingState *should* be 'have-remote-offer'.
-                // If it's not, it means the remote answer has already arrived and been processed,
-                // so we should not create/set our local answer.
+                // NEW CHECK: If remote answer already arrived and processed, do not proceed with local answer
+                if (pc.remoteDescription && pc.remoteDescription.type === 'answer') {
+                    console.warn(`PC for ${remoteUserId} already has a remote answer. Skipping local answer creation in handleOffer.`);
+                    // Ensure the UI reflects potential connection if this path is taken
+                    statusMessageSpan.textContent = `与 ${remoteUserId} 的连接已通过并发应答建立。`;
+                    isConnectedToVoice = true;
+                    updateUI();
+                    return;
+                }
+
+                // Original check (still valid, but the new one is more specific for the race)
                 if (pc.signalingState !== 'have-remote-offer') {
                     console.warn(`PC for ${remoteUserId} not in 'have-remote-offer' state (${pc.signalingState}) after setting remote offer. Skipping answer creation and setLocalDescription.`);
                     return;
