@@ -761,24 +761,18 @@
                 await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp }));
                 console.log(`handleOffer: PC for ${remoteUserId} signalingState after setRemoteDescription (offer): ${pc.signalingState}`);
 
-                // After setting the remote offer, the signalingState should be 'have-remote-offer'.
-                // If it's 'stable' here, it.
+                // After setting the remote offer, the signalingState *should* be 'have-remote-offer'.
+                // If it's not, it means the remote answer has already arrived and been processed,
+                // so we should not create/set our local answer.
                 if (pc.signalingState !== 'have-remote-offer') {
-                    console.warn(`PC for ${remoteUserId} not in 'have-remote-offer' state (${pc.signalingState}) after setting remote offer. Skipping answer creation.`);
+                    console.warn(`PC for ${remoteUserId} not in 'have-remote-offer' state (${pc.signalingState}) after setting remote offer. Skipping answer creation and setLocalDescription.`);
                     return;
                 }
 
                 const answer = await pc.createAnswer();
                 console.log(`handleOffer: PC for ${remoteUserId} signalingState before setLocalDescription (answer): ${pc.signalingState}`);
 
-                // Re-check signalingState right before setting the local answer.
-                // If it has changed to 'stable' (meaning remote answer arrived and was processed),
-                // then we should not try to set our local answer.
-                if (pc.signalingState !== 'have-remote-offer') {
-                    console.warn(`PC for ${remoteUserId} signalingState changed to ${pc.signalingState} right before setting local answer. Skipping setLocalDescription.`);
-                    return;
-                }
-
+                // Attempt to set local description for the answer
                 await pc.setLocalDescription(answer);
                 console.log(`handleOffer: PC for ${remoteUserId} signalingState after setLocalDescription (answer): ${pc.signalingState}`);
 
@@ -791,9 +785,17 @@
                 console.log(`已发送WebRTC应答给 ${remoteUserId}`);
                 statusMessageSpan.textContent = `已发送应答给 ${remoteUserId}`;
             } catch (error) {
-                console.error(`处理来自 ${remoteUserId} 的报价失败:`, error);
-                statusMessageSpan.textContent = `处理报价失败: ${error.message}`;
-                showCustomModal("处理报价失败", `处理来自 ${remoteUserId} 的 WebRTC 报价时发生错误: ${error.message}`);
+                // Check if the error is specifically 'Called in wrong state: stable'
+                if (error.name === 'InvalidStateError' && error.message.includes('Called in wrong state: stable')) {
+                    console.warn(`Caught expected InvalidStateError for ${remoteUserId}: ${error.message}. This likely means the remote answer was processed concurrently.`);
+                    statusMessageSpan.textContent = `与 ${remoteUserId} 的连接已通过并发应答建立。`;
+                    isConnectedToVoice = true; // Assume connection is active due to concurrent answer
+                    updateUI();
+                } else {
+                    console.error(`处理来自 ${remoteUserId} 的报价失败:`, error);
+                    statusMessageSpan.textContent = `处理报价失败: ${error.message}`;
+                    showCustomModal("处理报价失败", `处理来自 ${remoteUserId} 的 WebRTC 报价时发生错误: ${error.message}`);
+                }
             }
         }
 
